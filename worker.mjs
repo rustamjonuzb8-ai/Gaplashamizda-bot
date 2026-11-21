@@ -16,6 +16,7 @@ CREATE INDEX IF NOT EXISTS queue ON people(phase,waiting);
 CREATE TABLE IF NOT EXISTS rooms(id INTEGER PRIMARY KEY, a INTEGER, b INTEGER, yesA INTEGER DEFAULT 0, yesB INTEGER DEFAULT 0, ended INTEGER DEFAULT 0);
 CREATE TABLE IF NOT EXISTS blocks(a INTEGER,b INTEGER,PRIMARY KEY(a,b));
 CREATE TABLE IF NOT EXISTS reports(room INTEGER, reporter INTEGER, reported INTEGER, created INTEGER);
+CREATE TABLE IF NOT EXISTS invites(room INTEGER PRIMARY KEY, sender INTEGER, expires INTEGER);
 CREATE TABLE IF NOT EXISTS updates(id INTEGER PRIMARY KEY, at INTEGER);
 CREATE TABLE IF NOT EXISTS delivery(id INTEGER PRIMARY KEY, update_id INTEGER, method TEXT, body TEXT);
 `
@@ -36,6 +37,7 @@ export function processUpdate(run, update) {
   const t = message?.text?.trim() || ''
   const blocked = (a,b) => one('SELECT 1 FROM blocks WHERE (a=? AND b=?) OR (a=? AND b=?)',a,b,b,a)
   function pair(a,b) {
+    run('DELETE FROM invites WHERE room IN (SELECT id FROM rooms WHERE a IN (?,?) OR b IN (?,?))',a.id,b.id,a.id,b.id)
     const r = one('INSERT INTO rooms(a,b) VALUES(?,?) RETURNING id',a.id,b.id).id
     run("UPDATE people SET room=?, phase='chat', waiting=0 WHERE id IN (?,?)",r,a.id,b.id)
     for (const [self,peer] of [[a,b],[b,a]]) {
@@ -77,12 +79,11 @@ export function processUpdate(run, update) {
     if (room.yesA!==1 || room.yesB!==1) return
     if (!['ready','queue'].includes(peer.phase) || !['ready','queue'].includes(user.phase)) return me('Hozir suhbatni boshlash imkoni yo‘q.')
     if (action==='invite') {
-      run('CREATE TABLE IF NOT EXISTS invites(room INTEGER PRIMARY KEY, sender INTEGER, expires INTEGER)')
       run('INSERT OR REPLACE INTO invites VALUES(?,?,?)',room.id,id,Date.now()+300000)
       say(peer.id,'🤝 Tanishingiz sizni suhbatga taklif qildi.',inline('Taklifni qabul qilish','accept:'+room.id))
       return me('Taklif yuborildi. U 5 daqiqa amal qiladi.')
     }
-    if (action==='accept' && one("SELECT 1 FROM sqlite_master WHERE name='invites'") && one('DELETE FROM invites WHERE room=? AND sender=? AND expires>? RETURNING room',room.id,peer.id,Date.now())) return pair(user,peer)
+    if (action==='accept' && one('DELETE FROM invites WHERE room=? AND sender=? AND expires>? RETURNING room',room.id,peer.id,Date.now())) return pair(user,peer)
     return
   }
   if (t==='/start') {
@@ -158,6 +159,7 @@ export function processUpdate(run, update) {
     const i = Math.floor(Math.random()*otherQuestions.length)
     return say(id,otherQuestions[i],inline('Savolni yuborish','topic:'+room.id+':'+(interests.length+i)))
   }
+  if (message.reply_to_message || message.external_reply) return me('Xabarni yangi matn sifatida yuboring. Hozirgi suhbatdoshingizga boradi.')
   if (!t || t.startsWith('/')) return me('Hozir matnli xabar yuborishingiz mumkin.')
   say(peer,t)
 }

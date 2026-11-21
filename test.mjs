@@ -33,3 +33,25 @@ assert.equal(send(202,'yangi')[0].chat_id,303)
 assert(!send(101,'invite:1',true).some(x=>x.chat_id===202))
 assert(!send(101,'topic:1:0',true).some(x=>x.chat_id===202))
 console.log('Profil, 18+, navbat, anonim chat, tugatish, rozilik, taklif, blok va eski tugmalar sinovdan o‘tdi.')
+
+// An old Telegram reply must never reach the current partner.
+processUpdate(run,{update_id:++seq,message:{from:{id:202},chat:chat(202),text:'oldingi javob',reply_to_message:{message_id:1}}})
+assert(!run('SELECT body FROM delivery WHERE update_id=?',seq).some(row=>JSON.parse(row.body).chat_id===303))
+
+// A new conversation invalidates an outstanding invitation.
+send(202,'/stop')
+for (const id of [404,505,606]) {
+  for (const step of ['/start','24','Erkak','Buxoro','Kino']) send(id,step)
+}
+send(404,'💬 Suhbat boshlash')
+send(505,'💬 Suhbat boshlash')
+const firstRoom=run('SELECT room FROM people WHERE id=404')[0].room
+send(404,'/stop')
+send(404,'yes:'+firstRoom,true)
+send(505,'yes:'+firstRoom,true)
+send(404,'invite:'+firstRoom,true)
+send(606,'💬 Suhbat boshlash')
+send(505,'💬 Suhbat boshlash')
+send(505,'/stop')
+send(505,'accept:'+firstRoom,true)
+assert.equal(run('SELECT room FROM people WHERE id=505')[0].room,0)
