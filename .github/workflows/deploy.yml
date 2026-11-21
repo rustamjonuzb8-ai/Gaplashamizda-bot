@@ -1,5 +1,12 @@
 name: Gaplashamizda
-on: workflow_dispatch
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['worker.mjs', 'admin.mjs', 'menu.mjs', 'premium.mjs', 'register.mjs', 'wrangler.jsonc']
+concurrency:
+  group: gaplashamizda-deploy
+  cancel-in-progress: false
 permissions:
   contents: read
 jobs:

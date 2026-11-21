@@ -1,3 +1,4 @@
+import {plans,grant,membership} from './premium.mjs'
 export const adminSchema = `
 CREATE TABLE IF NOT EXISTS activity(user INTEGER PRIMARY KEY, joined INTEGER, seen INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS activity_seen ON activity(seen);
@@ -30,7 +31,10 @@ export function adminPanel({run,id,owner,cb,t,say,enqueue}) {
   const pending=authorized && run('SELECT field FROM admin_input WHERE owner=?',id)[0]?.field
   if (command!=='/admin' && !data.startsWith('adm:') && !(pending && !cb)) return false
   if(cb) enqueue('answerCallbackQuery',{callback_query_id:cb.id})
-  if(!authorized) {say(id,'Bu bo‘lim bot egasi uchun.');return true}
+  if(!authorized) {
+    say(id,owner?'Bu bo‘lim bot egasi uchun.':'Admin hali bog‘lanmagan. Bot egasi GitHub’da ADMIN_ID qiymatini saqlashi kerak. Sizning Telegram ID raqamingiz: '+id)
+    return true
+  }
   const show=(text,rows)=>say(id,text,{inline_keyboard:rows})
   const clear=()=>run('DELETE FROM admin_input WHERE owner=?',id)
   const count=(sql,...args)=>run(sql,...args)[0].n
@@ -41,7 +45,9 @@ export function adminPanel({run,id,owner,cb,t,say,enqueue}) {
     const labels={age:'Profil to‘ldirmoqda',gender:'Profil to‘ldirmoqda',city:'Profil to‘ldirmoqda',interest:'Profil to‘ldirmoqda',queue:'Qidiruvda',chat:'Suhbatda',ready:'Menyuda'}
     const ban=blocked(user)
     const rows=user===id?[]:[[button(ban?'Blokdan chiqarish':'Bloklash', (ban?'unban:':'confirm:')+user)]]
-    show(['ID '+user,ban?'Bloklangan':labels[p.phase],p.age && p.age+' yosh',p.city,p.interest].filter(Boolean).join(' · '),[...rows,back])
+    rows.push(Object.entries(plans).map(([key,p])=>button(p.badge+' '+p.days+' kun','gift:'+user+':'+key)))
+    const tier=membership(run,user)
+    show(['ID '+user,tier && plans[tier.plan].title,ban?'Bloklangan':labels[p.phase],p.age && p.age+' yosh',p.city,p.interest].filter(Boolean).join(' · '),[...rows,back])
   }
   function settings() {
     const on=key=>setting(run,key)==='1'?'ochiq':'yopiq'
@@ -62,7 +68,7 @@ export function adminPanel({run,id,owner,cb,t,say,enqueue}) {
     run('INSERT OR REPLACE INTO settings VALUES(?,?)',pending,t);clear();settings();return true
   }
   clear()
-  const [,action='home',arg='']=data.split(':')
+  const [,action='home',arg='',key='']=data.split(':')
   const num=Number(arg)
   if(action==='stats') {
     const now=Date.now()
@@ -76,6 +82,13 @@ export function adminPanel({run,id,owner,cb,t,say,enqueue}) {
       'Jami suhbatlar: '+count('SELECT count(*) n FROM rooms'),
       'Ochiq shikoyatlar: '+count('SELECT count(*) n FROM reports WHERE rowid NOT IN (SELECT report FROM reviewed)'),
       'Bloklanganlar: '+count('SELECT count(*) n FROM bans')].join('\n'),[[button('Yangilash','stats')],back])
+  } else if((action==='gift'||action==='grant') && Object.hasOwn(plans,key) && run('SELECT id FROM people WHERE id=?',num).length){
+    if(action==='gift') show('ID '+num+' uchun '+plans[key].title+' '+plans[key].days+' kunga hozirdan faollashsinmi? Bu avvalgi tarif o‘rniga o‘tadi.',[[button('🎁 Tasdiqlash','grant:'+num+':'+key)],back])
+    else {
+      grant(run,num,key,plans[key].days)
+      say(num,'🎁 Sizga '+plans[key].title+' '+plans[key].days+' kunga sovg‘a qilindi!')
+      profile(num)
+    }
   } else if(action==='settings') settings()
   else if(action==='toggle' && ['registration','matching'].includes(arg)) {
     run('INSERT OR REPLACE INTO settings VALUES(?,?)',arg,setting(run,arg)==='1'?'0':'1');settings()
