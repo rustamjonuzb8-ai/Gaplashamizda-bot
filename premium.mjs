@@ -13,6 +13,7 @@ export function membership(run,user){
   const now=Date.now()
   return run('SELECT plan,until_ms FROM purchases WHERE buyer=? AND refunded=0 AND starts<=? AND until_ms>? ORDER BY starts LIMIT 1',user,now,now)[0]
 }
+const localTime=ms=>new Intl.DateTimeFormat('uz',{timeZone:'Asia/Tashkent',day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit',hour12:false}).format(ms)
 const price=(run,key)=>Number(run('SELECT value FROM settings WHERE key=?','price_'+key)[0]?.value||0)
 export function paymentEvent(run,update,owner,enqueue,say){
   const query=update.pre_checkout_query
@@ -39,7 +40,7 @@ export function paymentEvent(run,update,owner,enqueue,say){
     const start=Math.max(Date.now(),end||0)
     const until=start+plans[order.plan].days*86400000
     if(run('INSERT OR IGNORE INTO purchases VALUES(?,?,?,?,?,0) RETURNING charge',charge,id,order.plan,start,until).length)
-      say(id,'✅ To‘lov qabul qilindi. '+plans[order.plan].title+' · '+plans[order.plan].days+' kun. '+(end>Date.now()?'Yangi muddat amaldagi tarif tugagach boshlanadi.':'Belgingiz keyingi suhbat kartasida ko‘rinadi.')+'\nTo‘lov bo‘yicha yordam: /paysupport')
+      say(id,'✅ To‘lov qabul qilindi. '+plans[order.plan].title+' · '+plans[order.plan].days+' kun. '+(end>Date.now()?'Yangi muddat amaldagi tarif tugagach boshlanadi.':'Belgingiz keyingi suhbat kartasida ko‘rinadi.')+'\nBoshlanish: '+localTime(start)+'\nTugash: '+localTime(until)+' (Toshkent vaqti).\nTo‘lov bo‘yicha yordam: /paysupport')
     return true
   }
   if(!message || message.chat.type!=='private') return false
@@ -67,6 +68,12 @@ export function paymentEvent(run,update,owner,enqueue,say){
       say(id,'Murojaat yuborildi.')
       return true
     }
+    if(!t.startsWith('/')){
+      if(Date.now()-pending.touched<600000 && !t){say(id,'Murojaatingizni matn bilan yuboring yoki /cancel bosing.');return true}
+      run('DELETE FROM payment_support WHERE buyer=?',id)
+      say(id,'Yordam yozish vaqti tugadi. Murojaatni qayta boshlash uchun /paysupport bosing.')
+      return true
+    }
     run('DELETE FROM payment_support WHERE buyer=?',id)
     if(t==='/cancel'){say(id,'Murojaat bekor qilindi.');return true}
   }
@@ -89,5 +96,5 @@ export function premiumCard(run,user,action,say,enqueue){
     return say(user,p.title+' · '+p.days+' kun\n\n'+p.badge+' Suhbatdosh topildi!\nShu belgi profilingizda ko‘rinadi.\n\n🎲 Maxsus savol\n«'+p.question+'»\n\n'+(stars?'Bir martalik narx: '+stars+' Stars.':'Sotuv hali ochilmagan.'),{inline_keyboard:rows})
   }
   const current=membership(run,user)
-  say(user,'💎 Premium\n\n'+(current?'Sizda faol: '+plans[current.plan].title+'\n':'')+'Belgi va maxsus savolni ko‘rish uchun tarifni tanlang. Premium faqat to‘lov tasdiqlanganda ochiladi.\nYordam: /paysupport',{inline_keyboard:Object.entries(plans).map(([k,v])=>[btn(v.title+' · '+v.days+' kun'+(price(run,k)?' · ⭐ '+price(run,k):''),'view:'+k)])})
+  say(user,'💎 Premium\n\n'+(current?'Sizda faol: '+plans[current.plan].title+' · '+localTime(current.until_ms)+' gacha (Toshkent).\n':'')+'Belgi va maxsus savolni ko‘rish uchun tarifni tanlang. Premium faqat to‘lov tasdiqlanganda ochiladi.\nYordam: /paysupport',{inline_keyboard:Object.entries(plans).map(([k,v])=>[btn(v.title+' · '+v.days+' kun'+(price(run,k)?' · ⭐ '+price(run,k):''),'view:'+k)])})
 }

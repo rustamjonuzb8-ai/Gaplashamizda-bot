@@ -299,7 +299,7 @@ export class Lobby {
       if (run('INSERT OR IGNORE INTO updates VALUES(?,?) RETURNING id',update.update_id,Date.now()).length)
         processUpdate(run,update,this.env.ADMIN_ID,origin)
     })
-    for (const job of run('SELECT * FROM delivery ORDER BY id')) {
+    for (const job of run("SELECT * FROM delivery ORDER BY (method='answerPreCheckoutQuery') DESC,id")) {
       const response=await fetch('https://api.telegram.org/bot'+this.env.BOT_TOKEN+'/'+job.method,{
         method:'POST',headers:{'content-type':'application/json'},body:job.body
       })
