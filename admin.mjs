@@ -30,7 +30,10 @@ export function adminPanel({run,id,owner,cb,t,say,enqueue}) {
   const pending=authorized && run('SELECT field FROM admin_input WHERE owner=?',id)[0]?.field
   if (command!=='/admin' && !data.startsWith('adm:') && !(pending && !cb)) return false
   if(cb) enqueue('answerCallbackQuery',{callback_query_id:cb.id})
-  if(!authorized) {say(id,'Bu bo‘lim bot egasi uchun.');return true}
+  if(!authorized) {
+    say(id,owner?'Bu bo‘lim bot egasi uchun.':'Admin hali bog‘lanmagan. Bot egasi GitHub’da ADMIN_ID qiymatini saqlashi kerak. Sizning Telegram ID raqamingiz: '+id)
+    return true
+  }
   const show=(text,rows)=>say(id,text,{inline_keyboard:rows})
   const clear=()=>run('DELETE FROM admin_input WHERE owner=?',id)
   const count=(sql,...args)=>run(sql,...args)[0].n
