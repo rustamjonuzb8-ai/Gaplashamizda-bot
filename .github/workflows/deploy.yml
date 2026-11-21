@@ -1,0 +1,26 @@
+name: Gaplashamizda
+on: workflow_dispatch
+permissions:
+  contents: read
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: node test.mjs
+      - name: Worker va Telegramni ulash
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${BOT_TOKEN:?BOT_TOKEN kerak}" "${CLOUDFLARE_API_TOKEN:?CLOUDFLARE_API_TOKEN kerak}" "${CLOUDFLARE_ACCOUNT_ID:?CLOUDFLARE_ACCOUNT_ID kerak}"
+          npx --yes wrangler@4 deploy | tee "$RUNNER_TEMP/worker.log"
+          printf '%s' "$BOT_TOKEN" | npx --yes wrangler@4 secret put BOT_TOKEN
+          export WORKER_URL="$(grep -Eo 'https://gaplashamizda-bot\.[a-zA-Z0-9-]+\.workers\.dev' "$RUNNER_TEMP/worker.log" | head -1)"
+          node register.mjs
