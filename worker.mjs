@@ -1,3 +1,4 @@
+import {plans,premiumSchema,premiumCard,membership} from './premium.mjs'
 import {menuPage} from './menu.mjs'
 import { adminSchema, adminPanel, setting, topics } from './admin.mjs'
 const legacyHome = ['💬 Suhbat boshlash','🤝 Tanishlarim','⚙️ Sozlamalar','👤 Profilim','🏠 Bosh menyu','/start','/menu','/cancel']
@@ -15,7 +16,7 @@ const questions = {
 const otherQuestions = ['Oxirgi marta sizni nima kuldirdi?', 'Bolalikdagi eng yaxshi xotirangiz qaysi?', 'Bir kun bo‘sh vaqtingiz bo‘lsa, nima qilardingiz?']
 const keyboard = rows => ({keyboard: rows, resize_keyboard: true})
 const inline = (label, data) => ({inline_keyboard: [[{text: label, callback_data: data}]]})
-export const schema = adminSchema + `
+export const schema = adminSchema + premiumSchema + `
 CREATE TABLE IF NOT EXISTS people(id INTEGER PRIMARY KEY, phase TEXT DEFAULT 'age', age INTEGER, city TEXT DEFAULT '', interest TEXT DEFAULT '', gender TEXT DEFAULT '', room INTEGER DEFAULT 0, waiting INTEGER DEFAULT 0, wide INTEGER DEFAULT 0, previous INTEGER DEFAULT 0);
 CREATE INDEX IF NOT EXISTS queue ON people(phase,waiting);
 CREATE TABLE IF NOT EXISTS rooms(id INTEGER PRIMARY KEY, a INTEGER, b INTEGER, yesA INTEGER DEFAULT 0, yesB INTEGER DEFAULT 0, ended INTEGER DEFAULT 0);
@@ -39,7 +40,7 @@ export function processUpdate(run, update, owner, origin) {
   const person = who => one('SELECT * FROM people WHERE id=?',who)
   const homeFor = who => [
     ...(origin ? [[{text:'✨ Menyuni ochish',web_app:{url:origin+'/menu'}}]] : []),
-    ['💬 Suhbat boshlash'], ['👤 Profilim','🤝 Tanishlarim'],
+    ['💬 Suhbat boshlash'], ['👤 Profilim','🤝 Tanishlarim'], ['💎 Premium','🆕 Yangiliklar'],
     ...(String(who)===String(owner) ? [['🛠 Admin panel']] : [])
   ]
   const home=homeFor(id)
@@ -67,10 +68,20 @@ export function processUpdate(run, update, owner, origin) {
   const complete=Boolean(user.age && user.interest)
   const choices={gender:[['Ayol','Erkak'],['Ko‘rsatmaslik']],city:[['O‘tkazib yuborish']],interest:[interests.slice(0,2),interests.slice(2)]}
   const prompts={age:'Yangi yoshingizni raqam bilan yozing.',gender:'Profilingizda qaysi jins ko‘rinsin?',city:'Shahar nomini yozing yoki yashiring.',interest:'Sizga qaysi mavzu yoqadi?'}
+  const premiumAction=cb?.data?.startsWith('premium:')?cb.data.slice(8):mini.startsWith('premium:')?mini.slice(8):null
+  if(premiumAction!==null || t==='💎 Premium' || t==='/premium'){
+    if(cb) enqueue('answerCallbackQuery',{callback_query_id:cb.id})
+    if(!complete) return me('Avval profilingizni yakunlang. /start orqali boshlang.')
+    return premiumCard(run,id,premiumAction||'list',say)
+  }
+  if(t==='🆕 Yangiliklar'||mini==='news'){
+    return me('🆕 Gaplashamizdada yangi\n\n💎 Premium belgilarini ko‘ring va bittasini bepul sinang.\n👤 Profilimda faqat kerakli ma’lumotni o‘zgartiring.\n🎲 Suhbat paytida «Savol tanlash» bilan gap boshlang.')
+  }
   function profileCard(){
     const p=person(id)
     const rows=[[button('Yosh','profile:age'),button('Jins','profile:gender')],[button('Shahar','profile:city'),button('Qiziqish','profile:interest')],[button('‹ Bosh menyu','profile:home')]]
-    say(id,'👤 Mening profilim\n\n'+p.age+' yosh · '+(p.gender||'Jins yashirilgan')+'\n📍 '+(p.city||'Shahar yashirilgan')+'\n✦ '+p.interest+'\n\nQaysi ma’lumotni o‘zgartirasiz?',{inline_keyboard:rows})
+    const tier=membership(run,id)
+    say(id,(tier?plans[tier.plan].badge:'👤')+' Mening profilim\n\n'+p.age+' yosh · '+(p.gender||'Jins yashirilgan')+'\n📍 '+(p.city||'Shahar yashirilgan')+'\n✦ '+p.interest+'\n\nQaysi ma’lumotni o‘zgartirasiz?',{inline_keyboard:rows})
   }
   const busy=['chat','queue'].includes(user.phase)
   if(cb?.data?.startsWith('profile:')){
@@ -116,7 +127,8 @@ export function processUpdate(run, update, owner, origin) {
     const r = one('INSERT INTO rooms(a,b) VALUES(?,?) RETURNING id',a.id,b.id).id
     run("UPDATE people SET room=?, phase='chat', waiting=0 WHERE id IN (?,?)",r,a.id,b.id)
     for (const [self,peer] of [[a,b],[b,a]]) {
-      say(self.id,'💬 Suhbatdosh topildi!\n'+[peer.gender,peer.age+' yosh',peer.city].filter(Boolean).join(' · ')+'\n'+(self.interest===peer.interest?'Umumiy qiziqish':'Suhbatdosh qiziqishi')+' · '+peer.interest,keyboard(chat))
+      const tier=membership(run,peer.id)
+      say(self.id,(tier?plans[tier.plan].badge:'💬')+' Suhbatdosh topildi!\n'+[peer.gender,peer.age+' yosh',peer.city].filter(Boolean).join(' · ')+'\n'+(self.interest===peer.interest?'Umumiy qiziqish':'Suhbatdosh qiziqishi')+' · '+peer.interest,keyboard(chat))
       say(self.id,question(peer.interest),inline('💬 Savolni yuborish','topic:'+r+':'+interests.indexOf(peer.interest)))
     }
   }
@@ -138,7 +150,8 @@ export function processUpdate(run, update, owner, origin) {
     const peer = person(room.a===id?room.b:room.a)
     if (blocked(id,peer.id)) return me('Bu amal endi mavjud emas.')
     if (action==='topic' && user.room===room.id && !room.ended) {
-      const prompt = [...interests.map(question),...otherQuestions][Number(arg)]
+      const tier=membership(run,id)
+      const prompt = arg==='premium' ? (tier && plans[tier.plan].question) : [...interests.map(question),...otherQuestions][Number(arg)]
       if (prompt) { say(peer.id,'💬 '+prompt); me('Savol yuborildi.') }
       return
     }
@@ -169,7 +182,7 @@ export function processUpdate(run, update, owner, origin) {
     if (user.phase==='queue') return me('Qidiruv davom etmoqda.',[['❌ Qidiruvni bekor qilish']])
     if (user.phase==='ready') return me('Salom! Gaplashamizmi? 👋',home)
     run("UPDATE people SET phase='age' WHERE id=?",id)
-    return me(setting(run,'welcome')+'\n\nYosh chegarasi: '+setting(run,'age')+'+. Yoshingiz nechada? Raqam bilan yozing.')
+    return say(id,setting(run,'welcome')+'\n\n🎂 Yoshingiz nechada? '+setting(run,'age')+' yosh yoki undan katta bo‘lsangiz, yoshingizni raqam bilan yozing.',{remove_keyboard:true})
   }
   if (user.phase==='age') {
     if (!/^\d{2,3}$/.test(t) || +t<Number(setting(run,'age')) || +t>110) return me('Yosh chegarasi: '+setting(run,'age')+'+. Haqiqiy yoshingizni yozing.')
@@ -230,6 +243,8 @@ export function processUpdate(run, update, owner, origin) {
     return
   }
   if (t==='🎲 Savol tanlash' || t==='🎲 Mavzu') {
+    const tier=membership(run,id)
+    if(tier) say(id,plans[tier.plan].title+' · '+plans[tier.plan].question,inline('✨ Maxsus savolni yuborish','topic:'+room.id+':premium'))
     const i = Math.floor(Math.random()*otherQuestions.length)
     return say(id,otherQuestions[i],inline('Savolni yuborish','topic:'+room.id+':'+(interests.length+i)))
   }
