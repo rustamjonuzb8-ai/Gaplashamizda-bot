@@ -1,5 +1,5 @@
 const home = [['💬 Suhbat boshlash'], ['🤝 Tanishlarim', '⚙️ Sozlamalar']]
-const chat = [['🎲 Mavzu', '⏭ Keyingi'], ['👋 Tugatish', '🚩 Shikoyat va bloklash']]
+const chat = [['🎲 Savol tanlash', '⏭ Keyingi'], ['👋 Tugatish', '🚩 Shikoyat va bloklash']]
 const interests = ['Kino', 'Musiqa', 'Sport', 'Sayohat']
 const questions = {
   Kino: 'Qaysi filmni yana bir marta ko‘rardingiz?',
@@ -87,11 +87,11 @@ export function processUpdate(run, update) {
     return
   }
   if (t==='/start') {
-    if (user.phase==='chat') return me('Suhbat davom etmoqda.',chat)
+    if (user.phase==='chat') return me('Suhbat davom etyapti. Xabar yozing yoki savol tanlang.',chat)
     if (user.phase==='queue') return me('Qidiruv davom etmoqda.',[['❌ Qidiruvni bekor qilish']])
-    if (user.phase==='ready') return me('Gaplashamizdaga xush kelibsiz!',home)
+    if (user.phase==='ready') return me('Salom! Gaplashamizmi? 👋',home)
     run("UPDATE people SET phase='age' WHERE id=?",id)
-    return me('Gaplashamizda · 18+\nYoshingizni raqam bilan yozing. Ismingiz va telefon raqamingiz suhbat kartasida ko‘rsatilmaydi.')
+    return me('Salom! 👋 Bu yerda suhbatdosh topib, ismingizni ko‘rsatmasdan yozishishingiz mumkin.\n\nBu bot 18 yosh va undan kattalar uchun. Yoshingiz nechada? Raqam bilan yozing.')
   }
   if (user.phase==='age') {
     if (!/^\d{2,3}$/.test(t) || +t<18 || +t>110) return me('Bu bot 18 yoshdan kattalar uchun. Davom etish uchun haqiqiy yoshingizni yozing.')
@@ -150,12 +150,12 @@ export function processUpdate(run, update) {
     }
     for (const who of [id,peer]) {
       say(who,report && who===id?'Shikoyat saqlandi. Suhbatdosh bloklandi.':'Suhbat tugadi.',keyboard(home))
-      if (!report) say(who,'Yana gaplashishni istaysizmi?',{inline_keyboard:[[{text:'Ha',callback_data:'yes:'+room.id},{text:'Yo‘q',callback_data:'no:'+room.id}]]})
+      if (!report) say(who,'Bu odam bilan yana gaplashasizmi? Ikkalangiz ham istasangiz, uni «Tanishlarim»dan topasiz.',{inline_keyboard:[[{text:'🤝 Ha, yana gaplashaman',callback_data:'yes:'+room.id},{text:'Hozircha yo‘q',callback_data:'no:'+room.id}]]})
     }
     if (next) search(0)
     return
   }
-  if (t==='🎲 Mavzu') {
+  if (t==='🎲 Savol tanlash' || t==='🎲 Mavzu') {
     const i = Math.floor(Math.random()*otherQuestions.length)
     return say(id,otherQuestions[i],inline('Savolni yuborish','topic:'+room.id+':'+(interests.length+i)))
   }
