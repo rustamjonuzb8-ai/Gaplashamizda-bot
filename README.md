@@ -1,6 +1,6 @@
 # Gaplashamizda
 
-O‘zbekcha anonim matnli Telegram botining birinchi versiyasi. Profil yoshi foydalanuvchi javobiga asoslanadi. Kutish navbati, qiziqish bo‘yicha juftlashish, shahar doirasini kengaytirish, matn uzatish, suhbat mavzulari, ikki tomon roziligidan so‘ng qayta taklif qilish hamda bloklash mavjud. Shikoyatlar reports jadvaliga yoziladi. Administrator interfeysi va Premium to‘lovlari keyingi bosqich uchun qolgan.
+O‘zbekcha anonim matnli Telegram botining birinchi versiyasi. Profil yoshi foydalanuvchi javobiga asoslanadi. Kutish navbati, qiziqish bo‘yicha juftlashish, shahar doirasini kengaytirish, matn uzatish, suhbat mavzulari, ikki tomon roziligidan so‘ng qayta taklif qilish hamda bloklash mavjud. Shikoyatlar reports jadvaliga yoziladi. Admin panel /admin orqali ochiladi. Premium to‘lovlari keyingi bosqich uchun qolgan.
 
 ## GitHub orqali joylash
 
@@ -11,3 +11,9 @@ O‘zbekcha anonim matnli Telegram botining birinchi versiyasi. Profil yoshi foy
 5. Ikki Telegram akkauntidan /start bosib matn yuboring. /stop, qayta taklif va /report ni ham sinang.
 
 Mahalliy test uchun Node.js 24 bilan node test.mjs buyrug‘ini bajaring. Profil va munosabatlar bitta SQLite Durable Object ichida saqlanadi. Jo‘natish navbatida matn vaqtincha turadi va yetkazish so‘rovi yakunlanganda o‘chiriladi. Telegram javobi yo‘lda uzilsa, qayta urinish xabarni takror yetkazishi mumkin.
+
+## Adminni bir marta ulash
+
+Bot ishga tushgach unga /id yuboring. Raqamni GitHub Actions secrets ichida ADMIN_ID nomi bilan saqlang va deploy workflow’ni qayta ishga tushiring. Shundan keyin /admin faqat shu Telegram akkaunti uchun ochiladi. Oddiy sozlamalar Telegram ichida o‘zgaradi va deploy talab qilmaydi.
+
+Statistikada «faol» belgilangan vaqt ichida botga murojaat qilgan noyob akkauntlarni anglatadi. Eski profilning kirgan sanasi noma’lum bo‘lsa, u yangi ro‘yxatdan o‘tganlar hisobiga qo‘shilmaydi. Panel suhbat matnlarini ko‘rsatmaydi.
