@@ -1,6 +1,7 @@
+import { adminSchema, adminPanel, setting, topics } from './admin.mjs'
 const home = [['💬 Suhbat boshlash'], ['🤝 Tanishlarim', '⚙️ Sozlamalar']]
 const chat = [['🎲 Savol tanlash', '⏭ Keyingi'], ['👋 Tugatish', '🚩 Shikoyat va bloklash']]
-const interests = ['Kino', 'Musiqa', 'Sport', 'Sayohat']
+const interests = topics
 const questions = {
   Kino: 'Qaysi filmni yana bir marta ko‘rardingiz?',
   Musiqa: 'Bugungi kayfiyatingizga qaysi qo‘shiq mos?',
@@ -10,7 +11,7 @@ const questions = {
 const otherQuestions = ['Oxirgi marta sizni nima kuldirdi?', 'Bolalikdagi eng yaxshi xotirangiz qaysi?', 'Bir kun bo‘sh vaqtingiz bo‘lsa, nima qilardingiz?']
 const keyboard = rows => ({keyboard: rows, resize_keyboard: true})
 const inline = (label, data) => ({inline_keyboard: [[{text: label, callback_data: data}]]})
-export const schema = `
+export const schema = adminSchema + `
 CREATE TABLE IF NOT EXISTS people(id INTEGER PRIMARY KEY, phase TEXT DEFAULT 'age', age INTEGER, city TEXT DEFAULT '', interest TEXT DEFAULT '', gender TEXT DEFAULT '', room INTEGER DEFAULT 0, waiting INTEGER DEFAULT 0, wide INTEGER DEFAULT 0, previous INTEGER DEFAULT 0);
 CREATE INDEX IF NOT EXISTS queue ON people(phase,waiting);
 CREATE TABLE IF NOT EXISTS rooms(id INTEGER PRIMARY KEY, a INTEGER, b INTEGER, yesA INTEGER DEFAULT 0, yesB INTEGER DEFAULT 0, ended INTEGER DEFAULT 0);
@@ -20,7 +21,7 @@ CREATE TABLE IF NOT EXISTS invites(room INTEGER PRIMARY KEY, sender INTEGER, exp
 CREATE TABLE IF NOT EXISTS updates(id INTEGER PRIMARY KEY, at INTEGER);
 CREATE TABLE IF NOT EXISTS delivery(id INTEGER PRIMARY KEY, update_id INTEGER, method TEXT, body TEXT);
 `
-export function processUpdate(run, update) {
+export function processUpdate(run, update, owner) {
   const cb = update.callback_query
   const message = update.message
   const sender = cb?.from || message?.from
@@ -32,9 +33,19 @@ export function processUpdate(run, update) {
   const me = (text, rows) => say(id,text,rows && keyboard(rows))
   const one = (q,...args) => run(q,...args)[0]
   const person = who => one('SELECT * FROM people WHERE id=?',who)
-  run('INSERT OR IGNORE INTO people(id) VALUES(?)',id)
-  const user = person(id)
   const t = message?.text?.trim() || ''
+  const existing = person(id)
+  const now = Date.now()
+  if (existing || String(id)===String(owner) || setting(run,'registration')==='1') {
+    run('INSERT OR IGNORE INTO people(id) VALUES(?)',id)
+    run('INSERT INTO activity VALUES(?,?,?) ON CONFLICT(user) DO UPDATE SET seen=excluded.seen',id,existing?null:now,now)
+  }
+  if (adminPanel({run,id,owner,cb,t,say,enqueue})) return
+  if (one('SELECT user FROM bans WHERE user=?',id)) return me('Sizning botdan foydalanishingiz cheklangan.')
+  const user = existing || person(id)
+  if (!user) return me('Yangi profillar uchun ro‘yxatdan o‘tish hozir yopiq.')
+  const paused = () => setting(run,'matching')!=='1'
+  const question = topic => setting(run,topic) || questions[topic]
   const blocked = (a,b) => one('SELECT 1 FROM blocks WHERE (a=? AND b=?) OR (a=? AND b=?)',a,b,b,a)
   function pair(a,b) {
     run('DELETE FROM invites WHERE room IN (SELECT id FROM rooms WHERE a IN (?,?) OR b IN (?,?))',a.id,b.id,a.id,b.id)
@@ -42,10 +53,11 @@ export function processUpdate(run, update) {
     run("UPDATE people SET room=?, phase='chat', waiting=0 WHERE id IN (?,?)",r,a.id,b.id)
     for (const [self,peer] of [[a,b],[b,a]]) {
       say(self.id,'💬 Suhbatdosh topildi!\n'+[peer.gender,peer.age+' yosh',peer.city].filter(Boolean).join(' · ')+'\n'+(self.interest===peer.interest?'Umumiy qiziqish':'Suhbatdosh qiziqishi')+' · '+peer.interest,keyboard(chat))
-      say(self.id,questions[peer.interest],inline('💬 Savolni yuborish','topic:'+r+':'+interests.indexOf(peer.interest)))
+      say(self.id,question(peer.interest),inline('💬 Savolni yuborish','topic:'+r+':'+interests.indexOf(peer.interest)))
     }
   }
   function search(wide) {
+    if (paused()) return me('Yangi suhbat qidirish vaqtincha yopiq.')
     const peer = one(`SELECT * FROM people p WHERE phase='queue' AND id NOT IN (?,?) AND previous<>?
       AND (?=1 OR ?='' OR city=?) AND (wide=1 OR city='' OR city=?)
       AND NOT EXISTS(SELECT 1 FROM blocks WHERE (a=? AND b=p.id) OR (a=p.id AND b=?))
@@ -62,7 +74,7 @@ export function processUpdate(run, update) {
     const peer = person(room.a===id?room.b:room.a)
     if (blocked(id,peer.id)) return me('Bu amal endi mavjud emas.')
     if (action==='topic' && user.room===room.id && !room.ended) {
-      const prompt = [...Object.values(questions),...otherQuestions][Number(arg)]
+      const prompt = [...interests.map(question),...otherQuestions][Number(arg)]
       if (prompt) { say(peer.id,'💬 '+prompt); me('Savol yuborildi.') }
       return
     }
@@ -77,11 +89,12 @@ export function processUpdate(run, update) {
       return
     }
     if (room.yesA!==1 || room.yesB!==1) return
+    if (paused() || one('SELECT user FROM bans WHERE user=?',peer.id)) return me('Hozir suhbatni boshlash imkoni yo‘q.')
     if (!['ready','queue'].includes(peer.phase) || !['ready','queue'].includes(user.phase)) return me('Hozir suhbatni boshlash imkoni yo‘q.')
     if (action==='invite') {
-      run('INSERT OR REPLACE INTO invites VALUES(?,?,?)',room.id,id,Date.now()+300000)
+      run('INSERT OR REPLACE INTO invites VALUES(?,?,?)',room.id,id,Date.now()+Number(setting(run,'minutes'))*60000)
       say(peer.id,'🤝 Tanishingiz sizni suhbatga taklif qildi.',inline('Taklifni qabul qilish','accept:'+room.id))
-      return me('Taklif yuborildi. U 5 daqiqa amal qiladi.')
+      return me('Taklif yuborildi. U '+setting(run,'minutes')+' daqiqa amal qiladi.')
     }
     if (action==='accept' && one('DELETE FROM invites WHERE room=? AND sender=? AND expires>? RETURNING room',room.id,peer.id,Date.now())) return pair(user,peer)
     return
@@ -91,10 +104,10 @@ export function processUpdate(run, update) {
     if (user.phase==='queue') return me('Qidiruv davom etmoqda.',[['❌ Qidiruvni bekor qilish']])
     if (user.phase==='ready') return me('Salom! Gaplashamizmi? 👋',home)
     run("UPDATE people SET phase='age' WHERE id=?",id)
-    return me('Salom! 👋 Bu yerda suhbatdosh topib, ismingizni ko‘rsatmasdan yozishishingiz mumkin.\n\nBu bot 18 yosh va undan kattalar uchun. Yoshingiz nechada? Raqam bilan yozing.')
+    return me(setting(run,'welcome')+'\n\nYosh chegarasi: '+setting(run,'age')+'+. Yoshingiz nechada? Raqam bilan yozing.')
   }
   if (user.phase==='age') {
-    if (!/^\d{2,3}$/.test(t) || +t<18 || +t>110) return me('Bu bot 18 yoshdan kattalar uchun. Davom etish uchun haqiqiy yoshingizni yozing.')
+    if (!/^\d{2,3}$/.test(t) || +t<Number(setting(run,'age')) || +t>110) return me('Yosh chegarasi: '+setting(run,'age')+'+. Haqiqiy yoshingizni yozing.')
     run("UPDATE people SET phase='gender',age=? WHERE id=?",+t,id)
     return me('Profilingizda nima ko‘rsatilsin?',[['Ayol','Erkak'],['Ko‘rsatmaslik']])
   }
@@ -196,7 +209,7 @@ export class Lobby {
     this.ctx.storage.transactionSync(()=>{
       run('DELETE FROM updates WHERE at<?',Date.now()-48*3600000)
       if (run('INSERT OR IGNORE INTO updates VALUES(?,?) RETURNING id',update.update_id,Date.now()).length)
-        processUpdate(run,update)
+        processUpdate(run,update,this.env.ADMIN_ID)
     })
     for (const job of run('SELECT * FROM delivery ORDER BY id')) {
       const response=await fetch('https://api.telegram.org/bot'+this.env.BOT_TOKEN+'/'+job.method,{
