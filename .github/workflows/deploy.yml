@@ -6,8 +6,8 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     env:
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN || secrets.CLAUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID || secrets.CLAUDFLARE_ACCOUNT_ID }}
       ADMIN_ID: ${{ secrets.ADMIN_ID }}
       BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
     steps:
