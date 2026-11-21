@@ -13,6 +13,6 @@ const bot = await api('getMe', {})
 if (bot.username?.toLowerCase() !== 'gaplashamizdauzbot') {
   throw Error('BOT_TOKEN @Gaplashamizdauzbot uchun bo‘lishi kerak')
 }
-await api('setWebhook',{url:url.href,secret_token:await webhookSecret(BOT_TOKEN),allowed_updates:['message','callback_query'],max_connections:1})
+await api('setWebhook',{url:url.href,secret_token:await webhookSecret(BOT_TOKEN),allowed_updates:['message','callback_query','pre_checkout_query'],max_connections:1})
 if ((await api('getWebhookInfo',{})).url!==url.href) throw Error('Webhook manzili mos kelmadi')
 console.log('Telegram ulanishi tasdiqlandi.')

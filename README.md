@@ -1,6 +1,6 @@
 # Gaplashamizda
 
-O‘zbekcha anonim matnli Telegram botining birinchi versiyasi. Profil yoshi foydalanuvchi javobiga asoslanadi. Kutish navbati, qiziqish bo‘yicha juftlashish, shahar doirasini kengaytirish, matn uzatish, suhbat mavzulari, ikki tomon roziligidan so‘ng qayta taklif qilish hamda bloklash mavjud. Shikoyatlar reports jadvaliga yoziladi. Admin panel /admin orqali ochiladi. Premium to‘lovlari keyingi bosqich uchun qolgan.
+O‘zbekcha anonim matnli Telegram botining birinchi versiyasi. Profil yoshi foydalanuvchi javobiga asoslanadi. Kutish navbati, qiziqish bo‘yicha juftlashish, shahar doirasini kengaytirish, matn uzatish, suhbat mavzulari, ikki tomon roziligidan so‘ng qayta taklif qilish hamda bloklash mavjud. Shikoyatlar reports jadvaliga yoziladi. Admin panel /admin orqali ochiladi. Premium faqat Telegram Stars orqali xarid qilinadi. /admin → Sozlamalar orqali tarifga Stars narxini kiriting. 0 narxda sotuv yopiq. Xaridlar bir martalik. To‘lov bo‘yicha murojaat /paysupport orqali adminga boradi.
 
 ## GitHub orqali joylash
 
