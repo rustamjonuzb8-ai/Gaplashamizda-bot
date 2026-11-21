@@ -1,4 +1,4 @@
-import {plans,grant,membership} from './premium.mjs'
+import {plans,membership} from './premium.mjs'
 export const adminSchema = `
 CREATE TABLE IF NOT EXISTS activity(user INTEGER PRIMARY KEY, joined INTEGER, seen INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS activity_seen ON activity(seen);
@@ -21,6 +21,7 @@ const menu=[[button('📊 Statistika','stats'),button('⚙️ Sozlamalar','setti
   [button('🔎 ID bilan izlash','find'),button('Yopish','close')]]
 const back=[button('‹ Panel','home')]
 const fields={welcome:'Salomlashuv matni',minutes:'Taklif muddati (daqiqa)',age:'Yangi profil uchun minimal yosh'}
+for(const [k,p] of Object.entries(plans)) fields['price_'+k]=p.title+' narxi (Stars)'
 for (const topic of topics) fields[topic]=topic+' uchun savol'
 
 export function adminPanel({run,id,owner,cb,t,say,enqueue}) {
@@ -45,7 +46,6 @@ export function adminPanel({run,id,owner,cb,t,say,enqueue}) {
     const labels={age:'Profil to‘ldirmoqda',gender:'Profil to‘ldirmoqda',city:'Profil to‘ldirmoqda',interest:'Profil to‘ldirmoqda',queue:'Qidiruvda',chat:'Suhbatda',ready:'Menyuda'}
     const ban=blocked(user)
     const rows=user===id?[]:[[button(ban?'Blokdan chiqarish':'Bloklash', (ban?'unban:':'confirm:')+user)]]
-    rows.push(Object.entries(plans).map(([key,p])=>button(p.badge+' '+p.days+' kun','gift:'+user+':'+key)))
     const tier=membership(run,user)
     show(['ID '+user,tier && plans[tier.plan].title,ban?'Bloklangan':labels[p.phase],p.age && p.age+' yosh',p.city,p.interest].filter(Boolean).join(' · '),[...rows,back])
   }
@@ -54,7 +54,7 @@ export function adminPanel({run,id,owner,cb,t,say,enqueue}) {
     const rows=[[button('Yangi profil · '+on('registration'),'toggle:registration')],
       [button('Yangi suhbat · '+on('matching'),'toggle:matching')],
       ...Object.entries(fields).map(([key,label])=>[button(label,'edit:'+key)]),back]
-    show('⚙️ Sozlamalar\nYangi profil yoshi: '+setting(run,'age')+'+\nTaklif muddati: '+setting(run,'minutes')+' daqiqa.\nKerakli bandni bosing.',rows)
+    show('⚙️ Sozlamalar\nPremium narxi (Stars): '+Object.entries(plans).map(([k,p])=>p.badge+' '+(setting(run,'price_'+k)||'0')).join(' · ')+'\n0 — sotuv yopiq.\nYangi profil yoshi: '+setting(run,'age')+'+\nTaklif muddati: '+setting(run,'minutes')+' daqiqa.\nKerakli bandni bosing.',rows)
   }
   if(pending && !cb && !['/admin','/cancel'].includes(command)) {
     if (pending==='find') {
@@ -62,7 +62,7 @@ export function adminPanel({run,id,owner,cb,t,say,enqueue}) {
       clear();profile(Number(t));return true
     }
     const limits={age:[18,99],minutes:[1,60]}
-    const range=limits[pending]
+    const range=pending.startsWith('price_')?[0,10000]:limits[pending]
     if (range && (!/^\d+$/.test(t)||+t<range[0]||+t>range[1])) {say(id,range.join('–')+' oralig‘ida son yozing.');return true}
     if (!t || t.startsWith('/') || t.length>500) {say(id,'1–500 belgili matn kiriting yoki /cancel yozing.');return true}
     run('INSERT OR REPLACE INTO settings VALUES(?,?)',pending,t);clear();settings();return true
@@ -80,15 +80,9 @@ export function adminPanel({run,id,owner,cb,t,say,enqueue}) {
       'Hozir navbatda: '+count("SELECT count(*) n FROM people WHERE phase='queue'"),
       'Ochiq suhbatlar: '+count('SELECT count(*) n FROM rooms WHERE ended=0'),
       'Jami suhbatlar: '+count('SELECT count(*) n FROM rooms'),
+      'Premium xaridlari: '+count('SELECT count(*) n FROM purchases WHERE refunded=0'),
       'Ochiq shikoyatlar: '+count('SELECT count(*) n FROM reports WHERE rowid NOT IN (SELECT report FROM reviewed)'),
       'Bloklanganlar: '+count('SELECT count(*) n FROM bans')].join('\n'),[[button('Yangilash','stats')],back])
-  } else if((action==='gift'||action==='grant') && Object.hasOwn(plans,key) && run('SELECT id FROM people WHERE id=?',num).length){
-    if(action==='gift') show('ID '+num+' uchun '+plans[key].title+' '+plans[key].days+' kunga hozirdan faollashsinmi? Bu avvalgi tarif o‘rniga o‘tadi.',[[button('🎁 Tasdiqlash','grant:'+num+':'+key)],back])
-    else {
-      grant(run,num,key,plans[key].days)
-      say(num,'🎁 Sizga '+plans[key].title+' '+plans[key].days+' kunga sovg‘a qilindi!')
-      profile(num)
-    }
   } else if(action==='settings') settings()
   else if(action==='toggle' && ['registration','matching'].includes(arg)) {
     run('INSERT OR REPLACE INTO settings VALUES(?,?)',arg,setting(run,arg)==='1'?'0':'1');settings()
