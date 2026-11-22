@@ -59,8 +59,7 @@ export function processUpdate(run, update, owner, origin) {
   const one = (q,...args) => run(q,...args)[0]
   const person = who => one('SELECT * FROM people WHERE id=?',who)
   const homeFor = who => [
-    ['💬 Suhbat boshlash'], ['👤 Profilim','🤝 Tanishlarim'], ['☀️ Kun savoli','💎 Premium'],['🆕 Yangiliklar','💬 Yordam'],
-    ...(origin ? [[{text:'✨ Menyuni ochish',web_app:{url:origin+'/menu'}}]] : []),
+    ['💬 Suhbat boshlash'], ['👤 Profilim','🤝 Tanishlarim'], ['☀️ Kun savoli','💎 Premium'],['🆕 Yangiliklar'],
     ...(String(who)===String(owner) ? [['🛠 Admin panel']] : [])
   ]
   const home=homeFor(id)
