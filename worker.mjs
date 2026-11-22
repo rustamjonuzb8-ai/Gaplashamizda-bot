@@ -15,6 +15,15 @@ const questions = {
   Sayohat: 'Ertaga yo‘lga chiqsangiz, qayerga borardingiz?'
 }
 const otherQuestions = ['Oxirgi marta sizni nima kuldirdi?', 'Bolalikdagi eng yaxshi xotirangiz qaysi?', 'Bir kun bo‘sh vaqtingiz bo‘lsa, nima qilardingiz?']
+const starters = [
+  {label:'😂 Kulgili gaplar', question:otherQuestions[0]},
+  {label:'☕ Dildan suhbat', question:'Bugun kimdir siz uchun qilgan qaysi kichik yaxshilik yodingizda qoldi?'},
+  {label:'🎬 Kino va serial', question:questions.Kino}
+]
+const thanks = ['😊 Kuldirdingiz', '🫶 Tinglaganingiz uchun rahmat', '💡 Sizdan yangi narsa bildim']
+function optionRows(labels, prefix) {
+  return labels.map((label,index)=>[button(label,prefix+index)])
+}
 const replyColors = new Map([
   ['💬 Suhbat boshlash','primary'], ['💎 Premium','success'],
   ['🎭 Ikkidan biri','primary'], ['🌍 Barcha shaharlardan izlash','primary'],
@@ -37,6 +46,8 @@ const inline = (label, data) => ({inline_keyboard: [[{text: label, callback_data
 export const schema = adminSchema + premiumSchema + gameSchema + `
 CREATE TABLE IF NOT EXISTS daily_votes(day INTEGER,user INTEGER,pick INTEGER,PRIMARY KEY(day,user));
 CREATE TABLE IF NOT EXISTS people(id INTEGER PRIMARY KEY, phase TEXT DEFAULT 'age', age INTEGER, city TEXT DEFAULT '', interest TEXT DEFAULT '', gender TEXT DEFAULT '', room INTEGER DEFAULT 0, waiting INTEGER DEFAULT 0, wide INTEGER DEFAULT 0, previous INTEGER DEFAULT 0);
+CREATE TABLE IF NOT EXISTS search_topic(user INTEGER PRIMARY KEY, session INTEGER, choice INTEGER);
+CREATE TABLE IF NOT EXISTS room_thanks(room INTEGER, sender INTEGER, PRIMARY KEY(room,sender));
 CREATE INDEX IF NOT EXISTS queue ON people(phase,waiting);
 CREATE TABLE IF NOT EXISTS rooms(id INTEGER PRIMARY KEY, a INTEGER, b INTEGER, yesA INTEGER DEFAULT 0, yesB INTEGER DEFAULT 0, ended INTEGER DEFAULT 0);
 CREATE TABLE IF NOT EXISTS blocks(a INTEGER,b INTEGER,PRIMARY KEY(a,b));
@@ -101,7 +112,7 @@ export function processUpdate(run, update, owner, origin) {
   }
   if(t==='💬 Yordam' || t==='/help') return me('💬 Yordam\n\nSuhbatdosh topish uchun «💬 Suhbat boshlash»ni bosing. Suhbatni /stop bilan tugatishingiz mumkin.\n\nPremium tarifi yoki Stars to‘lovi bo‘yicha murojaat uchun /paysupport ni bosing.',user.phase==='ready'?home:undefined)
   if(t==='🆕 Yangiliklar'||mini==='news'){
-    return me('🆕 Gaplashamizdada yangi\n\n🎭 «Ikkidan biri»da yashirin tanlov qiling. Javoblar ikkalangiz tanlagach ochiladi.\n💎 Premium tariflarini Telegram Stars bilan xarid qiling.\n👤 Profilimda faqat kerakli ma’lumotni o‘zgartiring.\n🎲 Suhbat paytida «Savol tanlash» bilan gap boshlang.')
+    return me('🆕 Gaplashamizdada yangi\n\n💭 Qidiruv paytida suhbat uchun mavzu tanlang.\n💌 Suhbat tugagach, bir marta anonim rahmat ayting.\n🎭 «Ikkidan biri»da yashirin tanlov qiling. Javoblar ikkalangiz tanlagach ochiladi.\n💎 Premium tariflarini Telegram Stars bilan xarid qiling.\n👤 Profilimda faqat kerakli ma’lumotni o‘zgartiring.\n🎲 Suhbat paytida «Savol tanlash» bilan gap boshlang.')
   }
   function profileCard(){
     const p=person(id)
@@ -151,11 +162,16 @@ export function processUpdate(run, update, owner, origin) {
   function pair(a,b) {
     run('DELETE FROM invites WHERE room IN (SELECT id FROM rooms WHERE a IN (?,?) OR b IN (?,?))',a.id,b.id,a.id,b.id)
     const r = one('INSERT INTO rooms(a,b) VALUES(?,?) RETURNING id',a.id,b.id).id
+    const pick = one("SELECT choice FROM search_topic WHERE user IN (?,?) AND user IN (SELECT id FROM people WHERE phase='queue') AND choice IS NOT NULL ORDER BY session LIMIT 1",a.id,b.id)
+    run('DELETE FROM search_topic WHERE user IN (?,?)',a.id,b.id)
     run("UPDATE people SET room=?, phase='chat', waiting=0 WHERE id IN (?,?)",r,a.id,b.id)
     for (const [self,peer] of [[a,b],[b,a]]) {
       const tier=membership(run,peer.id)
       say(self.id,(tier?plans[tier.plan].badge:'💬')+' Suhbatdosh topildi!\n'+[peer.gender,peer.age+' yosh',peer.city].filter(Boolean).join(' · ')+'\n'+(self.interest===peer.interest?'Umumiy qiziqish':'Suhbatdosh qiziqishi')+' · '+peer.interest+'\n\nBir-biringizni tezroq bilmoqchimisiz? 🎭 Ikkidan biri tugmasini bosib, birinchi tanlovni qiling.',keyboard(chat))
-      say(self.id,question(peer.interest),inline('💬 Savolni yuborish','topic:'+r+':'+interests.indexOf(peer.interest)))
+      if (pick) {
+        const starter = starters[pick.choice]
+        say(self.id,starter.label+' · Suhbat uchun savol\n'+starter.question)
+      } else say(self.id,question(peer.interest),inline('💬 Savolni yuborish','topic:'+r+':'+interests.indexOf(peer.interest)))
     }
   }
   function search(wide) {
@@ -165,12 +181,22 @@ export function processUpdate(run, update, owner, origin) {
       AND NOT EXISTS(SELECT 1 FROM blocks WHERE (a=? AND b=p.id) OR (a=p.id AND b=?))
       ORDER BY (interest=?) DESC, waiting LIMIT 1`,id,user.previous,id,wide,user.city,user.city,user.city,id,id,user.interest)
     if (peer) return pair(user,peer)
-    run("UPDATE people SET phase='queue',waiting=?,wide=? WHERE id=?",Date.now(),wide,id)
+    const waiting = user.waiting || Date.now()
+    run("UPDATE people SET phase='queue',waiting=?,wide=? WHERE id=?",waiting,wide,id)
+    if (!user.waiting) run('DELETE FROM search_topic WHERE user=?',id)
+    run('INSERT OR IGNORE INTO search_topic(user,session) VALUES(?,?)',id,update.update_id)
+    const session = one('SELECT session FROM search_topic WHERE user=?',id).session
     me('🔎 Suhbatdosh qidiryapman. Telegramdan chiqishingiz mumkin, juft topilganda xabar keladi.',[['🌍 Barcha shaharlardan izlash','☀️ Kun savoli'],['❌ Qidiruvni bekor qilish']])
+    say(id,'💭 Bugun nima haqida gaplashamiz? Xohlasangiz, birinchi savolni tanlang. Qidiruv davom etyapti.',{inline_keyboard:optionRows(starters.map(item=>item.label),'starter:'+session+':')})
   }
   if (cb) {
     enqueue('answerCallbackQuery',{callback_query_id:cb.id})
     const [action,num,arg] = (cb.data || '').split(':')
+    if (action==='starter') {
+      if (user.phase!=='queue' || !/^[0-2]$/.test(arg||'')) return me('Bu qidiruv tugagan.')
+      const saved = one('UPDATE search_topic SET choice=? WHERE user=? AND session=? RETURNING user',Number(arg),id,Number(num)||0)
+      return me(saved ? starters[Number(arg)].label+' tanlandi. Suhbatdosh topilganda savol ikkalangizga chiqadi.' : 'Bu tugma avvalgi qidiruvga tegishli.')
+    }
     const room = one('SELECT * FROM rooms WHERE id=? AND (a=? OR b=?)',Number(num)||0,id,id)
     if (!room) return me('Bu tugma eskirgan. Joriy holatni ko‘rish uchun /start bosing.')
     const peer = person(room.a===id?room.b:room.a)
@@ -184,6 +210,15 @@ export function processUpdate(run, update, owner, origin) {
     }
     if (action==='game' || action==='topic') return me('Bu suhbat tugagan. Tugma hozirgi suhbatga tegishli emas.')
     if (!room.ended) return
+    if (action==='thanks') {
+      if (one('SELECT 1 FROM room_thanks WHERE room=? AND sender=?',room.id,id)) return me('Rahmatingiz allaqachon yuborilgan.')
+      if (one('SELECT 1 FROM bans WHERE user=?',peer.id)) return me('Bu amal endi mavjud emas.')
+      if (arg===undefined) return say(id,'Suhbatdoshingizga nima demoqchisiz?',{inline_keyboard:optionRows(thanks,'thanks:'+room.id+':')})
+      if (!/^[0-2]$/.test(arg)) return
+      run('INSERT INTO room_thanks VALUES(?,?)',room.id,id)
+      say(peer.id,'💌 Yakunlangan suhbat №'+room.id+' dagi suhbatdoshingizdan\n'+thanks[Number(arg)])
+      return me('Rahmatingiz anonim yuborildi.')
+    }
     if (action==='yes' || action==='no') {
       const field = room.a===id?'yesA':'yesB'
       if (room[field]) return
@@ -269,7 +304,7 @@ export function processUpdate(run, update, owner, origin) {
     }
     for (const who of [id,peer]) {
       say(who,report && who===id?'Shikoyat saqlandi. Suhbatdosh bloklandi.':'Suhbat tugadi.',keyboard(homeFor(who)))
-      if (!report) say(who,'Bu odam bilan yana gaplashasizmi? Ikkalangiz ham istasangiz, uni «Tanishlarim»dan topasiz.',{inline_keyboard:[[{text:'🤝 Ha, yana gaplashaman',callback_data:'yes:'+room.id},{text:'Hozircha yo‘q',callback_data:'no:'+room.id}]]})
+      if (!report) say(who,'Bu odam bilan yana gaplashasizmi? Ikkalangiz ham istasangiz, uni «Tanishlarim»dan topasiz.',{inline_keyboard:[[{text:'🤝 Ha, yana gaplashaman',callback_data:'yes:'+room.id},{text:'Hozircha yo‘q',callback_data:'no:'+room.id}],[button('💌 Rahmat aytish','thanks:'+room.id)]]})
     }
     if (next) search(0)
     return
