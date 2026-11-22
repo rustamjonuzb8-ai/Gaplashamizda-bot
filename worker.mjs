@@ -15,6 +15,23 @@ const questions = {
   Sayohat: 'Ertaga yo‘lga chiqsangiz, qayerga borardingiz?'
 }
 const otherQuestions = ['Oxirgi marta sizni nima kuldirdi?', 'Bolalikdagi eng yaxshi xotirangiz qaysi?', 'Bir kun bo‘sh vaqtingiz bo‘lsa, nima qilardingiz?']
+const replyColors = new Map([
+  ['💬 Suhbat boshlash','primary'], ['💎 Premium','success'],
+  ['🎭 Ikkidan biri','primary'], ['🌍 Barcha shaharlardan izlash','primary'],
+  ['❌ Qidiruvni bekor qilish','danger'], ['🚩 Shikoyat va bloklash','danger']
+])
+function colorButtons(markup) {
+  if (markup?.keyboard) return {...markup, keyboard:markup.keyboard.map(row => row.map(item =>
+    replyColors.has(item) ? {text:item, style:replyColors.get(item)} : item
+  ))}
+  if (markup?.inline_keyboard) return {...markup, inline_keyboard:markup.inline_keyboard.map(row => row.map(item => {
+    const action = item.callback_data || ''
+    if (action.startsWith('premium:buy:') || action.startsWith('accept:')) return {...item, style:'success'}
+    if (/^(premium:view:|topic:|invite:|game:)/.test(action)) return {...item, style:'primary'}
+    return item
+  }))}
+  return markup
+}
 const keyboard = rows => ({keyboard: rows, resize_keyboard: true})
 const inline = (label, data) => ({inline_keyboard: [[{text: label, callback_data: data}]]})
 export const schema = adminSchema + premiumSchema + gameSchema + `
@@ -34,7 +51,7 @@ export function processUpdate(run, update, owner, origin) {
   const sender = cb?.from || message?.from
   const source = cb?.message || message
   const enqueue = (method, body) => run('INSERT INTO delivery(update_id,method,body) VALUES(?,?,?)',update.update_id,method,JSON.stringify(body))
-  const say = (to, text, markup) => enqueue('sendMessage',{chat_id:to,text,reply_markup:markup,protect_content:true,link_preview_options:{is_disabled:true}})
+  const say = (to, text, markup) => enqueue('sendMessage',{chat_id:to,text,reply_markup:colorButtons(markup),protect_content:true,link_preview_options:{is_disabled:true}})
   if(paymentEvent(run,update,owner,enqueue,say)) return
   if (!sender || sender.is_bot || source?.chat.type !== 'private' || source.chat.id !== sender.id) return
   const id = sender.id
@@ -42,8 +59,8 @@ export function processUpdate(run, update, owner, origin) {
   const one = (q,...args) => run(q,...args)[0]
   const person = who => one('SELECT * FROM people WHERE id=?',who)
   const homeFor = who => [
+    ['💬 Suhbat boshlash'], ['👤 Profilim','🤝 Tanishlarim'], ['☀️ Kun savoli','💎 Premium'],['🆕 Yangiliklar','💬 Yordam'],
     ...(origin ? [[{text:'✨ Menyuni ochish',web_app:{url:origin+'/menu'}}]] : []),
-    ['💬 Suhbat boshlash'], ['👤 Profilim','🤝 Tanishlarim'], ['☀️ Kun savoli','💎 Premium'],['🆕 Yangiliklar'],
     ...(String(who)===String(owner) ? [['🛠 Admin panel']] : [])
   ]
   const home=homeFor(id)
@@ -83,6 +100,7 @@ export function processUpdate(run, update, owner, origin) {
     if(!complete) return me('Avval profilingizni yakunlang. /start orqali boshlang.')
     return premiumCard(run,id,premiumAction||'list',say,enqueue)
   }
+  if(t==='💬 Yordam' && user.phase==='ready') return me('💬 Yordam\n\nSuhbatdosh topish uchun «💬 Suhbat boshlash»ni bosing. Suhbatni /stop bilan tugatishingiz mumkin.\n\nPremium tarifi yoki Stars to‘lovi bo‘yicha murojaat uchun /paysupport ni bosing.',home)
   if(t==='🆕 Yangiliklar'||mini==='news'){
     return me('🆕 Gaplashamizdada yangi\n\n🎭 «Ikkidan biri»da yashirin tanlov qiling. Javoblar ikkalangiz tanlagach ochiladi.\n💎 Premium tariflarini Telegram Stars bilan xarid qiling.\n👤 Profilimda faqat kerakli ma’lumotni o‘zgartiring.\n🎲 Suhbat paytida «Savol tanlash» bilan gap boshlang.')
   }
@@ -115,7 +133,7 @@ export function processUpdate(run, update, owner, origin) {
     if(['👤 Profilim','⚙️ Sozlamalar'].includes(t)) {
       me('Profilingiz tayyor.',home);return profileCard()
     }
-    if([back,'/menu','/cancel','/start'].includes(t)) return me('🏠 Bosh menyu'+(String(id)===String(owner)?' · Siz adminsiz.':''),home)
+    if([back,'/menu','/cancel','/start'].includes(t)) return me('🏠 Bosh menyu'+(String(id)===String(owner)?' · Siz adminsiz.':'')+'\n\nSuhbatdosh topish uchun «💬 Suhbat boshlash»ni bosing yoki «☀️ Kun savoli»da ovoz bering.',home)
   }
   if(!cb && busy && (mini || ['👤 Profilim','⚙️ Sozlamalar',back,'🤝 Tanishlarim','💬 Suhbat boshlash','/menu'].includes(t))) return me(user.phase==='queue'?'Qidiruv davom etyapti.':'Suhbat davom etyapti.',user.phase==='chat'?chat:[['❌ Qidiruvni bekor qilish']])
   if(!cb && user.phase.startsWith('edit_')){
