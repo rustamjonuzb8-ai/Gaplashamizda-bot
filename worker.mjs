@@ -22,7 +22,7 @@ const replyColors = new Map([
 ])
 function colorButtons(markup) {
   if (markup?.keyboard) return {...markup, keyboard:markup.keyboard.map(row => row.map(item =>
-    replyColors.has(item) ? {text:item, style:replyColors.get(item)} : item
+    typeof item === 'string' ? {text:item, style:replyColors.get(item)} : item
   ))}
   if (markup?.inline_keyboard) return {...markup, inline_keyboard:markup.inline_keyboard.map(row => row.map(item => {
     const action = item.callback_data || ''
@@ -100,7 +100,7 @@ export function processUpdate(run, update, owner, origin) {
     if(!complete) return me('Avval profilingizni yakunlang. /start orqali boshlang.')
     return premiumCard(run,id,premiumAction||'list',say,enqueue)
   }
-  if(t==='💬 Yordam' && user.phase==='ready') return me('💬 Yordam\n\nSuhbatdosh topish uchun «💬 Suhbat boshlash»ni bosing. Suhbatni /stop bilan tugatishingiz mumkin.\n\nPremium tarifi yoki Stars to‘lovi bo‘yicha murojaat uchun /paysupport ni bosing.',home)
+  if(t==='💬 Yordam' || t==='/help') return me('💬 Yordam\n\nSuhbatdosh topish uchun «💬 Suhbat boshlash»ni bosing. Suhbatni /stop bilan tugatishingiz mumkin.\n\nPremium tarifi yoki Stars to‘lovi bo‘yicha murojaat uchun /paysupport ni bosing.',user.phase==='ready'?home:undefined)
   if(t==='🆕 Yangiliklar'||mini==='news'){
     return me('🆕 Gaplashamizdada yangi\n\n🎭 «Ikkidan biri»da yashirin tanlov qiling. Javoblar ikkalangiz tanlagach ochiladi.\n💎 Premium tariflarini Telegram Stars bilan xarid qiling.\n👤 Profilimda faqat kerakli ma’lumotni o‘zgartiring.\n🎲 Suhbat paytida «Savol tanlash» bilan gap boshlang.')
   }
@@ -173,7 +173,7 @@ export function processUpdate(run, update, owner, origin) {
     enqueue('answerCallbackQuery',{callback_query_id:cb.id})
     const [action,num,arg] = (cb.data || '').split(':')
     const room = one('SELECT * FROM rooms WHERE id=? AND (a=? OR b=?)',Number(num)||0,id,id)
-    if (!room) return
+    if (!room) return me('Bu tugma eskirgan. Joriy holatni ko‘rish uchun /start bosing.')
     const peer = person(room.a===id?room.b:room.a)
     if (blocked(id,peer.id)) return me('Bu amal endi mavjud emas.')
     if(action==='game' && user.room===room.id && !room.ended) return game(run,room,id,say,arg)
@@ -183,6 +183,7 @@ export function processUpdate(run, update, owner, origin) {
       if (prompt) { say(peer.id,'💬 '+prompt); me('Savol yuborildi.') }
       return
     }
+    if (action==='game' || action==='topic') return me('Bu suhbat tugagan. Tugma hozirgi suhbatga tegishli emas.')
     if (!room.ended) return
     if (action==='yes' || action==='no') {
       const field = room.a===id?'yesA':'yesB'
@@ -201,7 +202,10 @@ export function processUpdate(run, update, owner, origin) {
       say(peer.id,'🤝 Tanishingiz sizni suhbatga taklif qildi.',inline('Taklifni qabul qilish','accept:'+room.id))
       return me('Taklif yuborildi. U '+setting(run,'minutes')+' daqiqa amal qiladi.')
     }
-    if (action==='accept' && one('DELETE FROM invites WHERE room=? AND sender=? AND expires>? RETURNING room',room.id,peer.id,Date.now())) return pair(user,peer)
+    if (action==='accept') {
+      if (one('DELETE FROM invites WHERE room=? AND sender=? AND expires>? RETURNING room',room.id,peer.id,Date.now())) return pair(user,peer)
+      return me('Taklif muddati tugagan yoki bekor qilingan. «🤝 Tanishlarim» orqali yangi taklif yuboring.')
+    }
     return
   }
   if (t==='/start') {
@@ -261,7 +265,8 @@ export function processUpdate(run, update, owner, origin) {
     user.previous=peer
     if (report) {
       run('INSERT OR IGNORE INTO blocks VALUES(?,?)',id,peer)
-      run('INSERT INTO reports VALUES(?,?,?,?)',room.id,id,peer,Date.now())
+      const saved = one('INSERT INTO reports VALUES(?,?,?,?) RETURNING rowid AS number',room.id,id,peer,Date.now())
+      if (owner) say(Number(owner),'🚩 Yangi shikoyat №'+saved.number,inline('Shikoyatni ochish','adm:report:'+saved.number))
     }
     for (const who of [id,peer]) {
       say(who,report && who===id?'Shikoyat saqlandi. Suhbatdosh bloklandi.':'Suhbat tugadi.',keyboard(homeFor(who)))
@@ -278,6 +283,7 @@ export function processUpdate(run, update, owner, origin) {
     return say(id,otherQuestions[i],inline('Savolni yuborish','topic:'+room.id+':'+(interests.length+i)))
   }
   if (message.reply_to_message || message.external_reply) return me('Xabarni yangi matn sifatida yuboring. Hozirgi suhbatdoshingizga boradi.')
+  if (['🌍 Barcha shaharlardan izlash','❌ Qidiruvni bekor qilish'].includes(t)) return me('Qidiruv yakunlandi. Hozir suhbatdasiz.',chat)
   if (!t || t.startsWith('/')) return me('Hozir matnli xabar yuborishingiz mumkin.')
   say(peer,t)
 }
@@ -317,12 +323,31 @@ export class Lobby {
       if (run('INSERT OR IGNORE INTO updates VALUES(?,?) RETURNING id',update.update_id,Date.now()).length)
         processUpdate(run,update,this.env.ADMIN_ID,origin)
     })
-    for (const job of run("SELECT * FROM delivery ORDER BY (method='answerPreCheckoutQuery') DESC,id")) {
+    for (;;) {
+      const job = run("SELECT * FROM delivery ORDER BY (method='answerPreCheckoutQuery') DESC,id LIMIT 1")[0]
+      if (!job) break
       const response=await fetch('https://api.telegram.org/bot'+this.env.BOT_TOKEN+'/'+job.method,{
         method:'POST',headers:{'content-type':'application/json'},body:job.body
       })
       if (!response.ok && ![400,403].includes(response.status)) return new Response('Retry',{status:503})
-      run('DELETE FROM delivery WHERE id=?',job.id)
+      this.ctx.storage.transactionSync(()=>{
+        if (response.status===403 && job.method==='sendMessage') {
+          const id = JSON.parse(job.body).chat_id
+          const person = run('SELECT phase,room FROM people WHERE id=?',id)[0]
+          if (person?.phase==='chat') {
+            const peer = run('SELECT id FROM people WHERE room=? AND id<>?',person.room,id)[0]
+            run('UPDATE rooms SET ended=1 WHERE id=?',person.room)
+            run("UPDATE people SET phase='ready',room=0,waiting=0 WHERE room=?",person.room)
+            if (peer) {
+              const notice = {chat_id:peer.id,text:'Suhbatdoshga xabar yetkazib bo‘lmadi. Suhbat tugadi. Yangi suhbat uchun /start bosing.',reply_markup:{remove_keyboard:true}}
+              run('INSERT INTO delivery(update_id,method,body) VALUES(?,?,?)',job.update_id,'sendMessage',JSON.stringify(notice))
+            }
+          } else if (person?.phase==='queue') {
+            run("UPDATE people SET phase='ready',waiting=0 WHERE id=?",id)
+          }
+        }
+        run('DELETE FROM delivery WHERE id=?',job.id)
+      })
     }
     return new Response('OK')
   }

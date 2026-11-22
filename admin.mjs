@@ -74,7 +74,7 @@ export function adminPanel({run,id,owner,cb,t,say,enqueue}) {
     const now=Date.now()
     const total=count('SELECT count(*) n FROM people')
     const recent=ms=>count('SELECT count(*) n FROM activity WHERE seen>=?',now-ms)
-    show(['📊 Bot statistikasi','Botga kirganlar: '+total,'Profili tayyor: '+count("SELECT count(*) n FROM people WHERE phase IN ('ready','chat','queue')"),
+    show(['📊 Bot statistikasi','Botga kirganlar: '+total,'Profili tayyor: '+count("SELECT count(*) n FROM people WHERE age IS NOT NULL AND interest<>''"),
       '24 soatda qo‘shilgan: '+count('SELECT count(*) n FROM activity WHERE joined>=?',now-86400000),
       '24 soatda faol: '+recent(86400000),'7 kunda faol: '+recent(7*86400000),
       'Hozir navbatda: '+count("SELECT count(*) n FROM people WHERE phase='queue'"),

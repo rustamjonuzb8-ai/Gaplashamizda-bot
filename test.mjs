@@ -109,9 +109,9 @@ const launch=(id,action)=>{
 }
 assert.match(launch(404,'interest:Musiqa')[0].text,/saqlandi/)
 assert.equal(run('SELECT interest FROM people WHERE id=404')[0].interest,'Musiqa')
-assert(!launch(404,'profile')[0].reply_markup.keyboard.flat().includes('🛠 Admin panel'))
+assert(!launch(404,'profile')[0].reply_markup.keyboard.flat().some(b=>b.text==='🛠 Admin panel'))
 run("UPDATE people SET phase='ready',age=24,interest='Kino' WHERE id=900")
-assert(launch(900,'profile')[0].reply_markup.keyboard.flat().includes('🛠 Admin panel'))
+assert(launch(900,'profile')[0].reply_markup.keyboard.flat().some(b=>b.text==='🛠 Admin panel'))
 assert.match(admin(900,'🛠 Admin panel')[0].text,/Admin panel/)
 send(404,'profile:age',true)
 send(404,'💬 Suhbat boshlash')
@@ -161,3 +161,39 @@ admin(404,'/paysupport')
 run('UPDATE payment_support SET touched=? WHERE buyer=404',Date.now()-660000)
 const expired=admin(404,'Bu xabar yordam uchun')
 assert(expired.length===1 && expired[0].chat_id===404 && expired[0].text.includes('/paysupport'))
+
+for (const id of [771,772]) {
+  for (const step of ['/start','25','Ko‘rsatmaslik','Samarqand','Sport','💬 Suhbat boshlash']) admin(id,step)
+}
+for (const text of ['/help','💬 Yordam','❌ Qidiruvni bekor qilish']) {
+  assert(admin(771,text).every(x=>x.chat_id===771))
+}
+const alerts=admin(771,'/report')
+assert(alerts.some(x=>x.chat_id===900 && x.reply_markup.inline_keyboard[0][0].callback_data.startsWith('adm:report:')))
+const menu=admin(771,'/start')[0].reply_markup.keyboard.flat()
+assert(menu.every(b=>typeof b.text==='string'))
+assert.equal(menu[0].style,'primary')
+assert.match(admin(404,'topic:999999:0',true).at(-1).text,/eskirgan/)
+import {Lobby} from './worker.mjs'
+for (const id of [781,782]) {
+  for (const step of ['/start','25','Ko‘rsatmaslik','Xiva','Sport','💬 Suhbat boshlash']) admin(id,step)
+}
+run('DELETE FROM delivery')
+const originalFetch=globalThis.fetch
+const sent=[]
+const lobby=Object.create(Lobby.prototype)
+lobby.env={BOT_TOKEN:'test'}
+lobby.ctx={storage:{transactionSync:fn=>fn()}}
+lobby.sql={exec:(q,...args)=>({toArray:()=>run(q,...args)})}
+try {
+  globalThis.fetch=async(url,opts)=>{
+    const body=JSON.parse(opts.body)
+    sent.push(body)
+    return new Response(null,{status:body.chat_id===782?403:200})
+  }
+  await lobby.handle({update_id:++seq,message:{from:{id:781},chat:chat(781),text:'Salom'}})
+  assert(sent.some(x=>x.chat_id===781 && x.text.includes('yetkazib')))
+  assert(run('SELECT phase FROM people WHERE id IN (781,782)').every(p=>p.phase==='ready'))
+  assert.equal(run('SELECT * FROM delivery').length,0)
+} finally {globalThis.fetch=originalFetch}
+console.log('Yordam, eskirgan tugma, admin xabarnomasi va Telegram 403 holati tekshirildi.')
