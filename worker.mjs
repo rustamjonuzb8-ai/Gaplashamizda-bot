@@ -25,7 +25,7 @@ function optionRows(labels, prefix) {
   return labels.map((label,index)=>[button(label,prefix+index)])
 }
 const replyColors = new Map([
-  ['💬 Suhbat boshlash','primary'], ['💎 Premium','success'],
+  ['🔎 Suhbat izlash','primary'], ['💎 Premium','success'],
   ['🎭 Ikkidan biri','primary'], ['🌍 Barcha shaharlardan izlash','primary'],
   ['❌ Qidiruvni bekor qilish','danger'], ['🚩 Shikoyat va bloklash','danger']
 ])
@@ -70,7 +70,7 @@ export function processUpdate(run, update, owner, origin) {
   const one = (q,...args) => run(q,...args)[0]
   const person = who => one('SELECT * FROM people WHERE id=?',who)
   const homeFor = who => [
-    ['💬 Suhbat boshlash'], ['👤 Profilim','🤝 Tanishlarim'], ['☀️ Kun savoli','💎 Premium'],['🆕 Yangiliklar'],
+    ['🔎 Suhbat izlash'], ['📊 Statistikam','💎 Premium'], ['⚙️ Sozlamalar'],
     ...(String(who)===String(owner) ? [['🛠 Admin panel']] : [])
   ]
   const home=homeFor(id)
@@ -81,6 +81,7 @@ export function processUpdate(run, update, owner, origin) {
     if(typeof mini!=='string') return
     t=({search:'💬 Suhbat boshlash',profile:'👤 Profilim',friends:'🤝 Tanishlarim'})[mini]||''
   }
+  if(t==='🔎 Suhbat izlash') t='💬 Suhbat boshlash'
   if(t==='🛠 Admin panel') t='/admin'
   const existing = person(id)
   const now = Date.now()
@@ -110,7 +111,7 @@ export function processUpdate(run, update, owner, origin) {
     if(!complete) return me('Avval profilingizni yakunlang. /start orqali boshlang.')
     return premiumCard(run,id,premiumAction||'list',say,enqueue)
   }
-  if(t==='💬 Yordam' || t==='/help') return me('💬 Yordam\n\nSuhbatdosh topish uchun «💬 Suhbat boshlash»ni bosing. Suhbatni /stop bilan tugatishingiz mumkin.\n\nPremium tarifi yoki Stars to‘lovi bo‘yicha murojaat uchun /paysupport ni bosing.',user.phase==='ready'?home:undefined)
+  if(t==='💬 Yordam' || t==='/help') return me('💬 Yordam\n\nSuhbatdosh topish uchun «🔎 Suhbat izlash»ni bosing. Suhbatni /stop bilan tugatishingiz mumkin.\n\nPremium tarifi yoki Stars to‘lovi bo‘yicha murojaat uchun /paysupport ni bosing.',user.phase==='ready'?home:undefined)
   if(t==='🆕 Yangiliklar'||mini==='news'){
     return me('🆕 Gaplashamizdada yangi\n\n💭 Qidiruv paytida suhbat uchun mavzu tanlang.\n💌 Suhbat tugagach, bir marta anonim rahmat ayting.\n🎭 «Ikkidan biri»da yashirin tanlov qiling. Javoblar ikkalangiz tanlagach ochiladi.\n💎 Premium tariflarini Telegram Stars bilan xarid qiling.\n👤 Profilimda faqat kerakli ma’lumotni o‘zgartiring.\n🎲 Suhbat paytida «Savol tanlash» bilan gap boshlang.')
   }
@@ -121,6 +122,12 @@ export function processUpdate(run, update, owner, origin) {
     say(id,(tier?plans[tier.plan].badge:'👤')+' Mening profilim\n\n'+p.age+' yosh · '+(p.gender||'Jins yashirilgan')+'\n📍 '+(p.city||'Shahar yashirilgan')+'\n✦ '+p.interest+'\n\nQaysi ma’lumotni o‘zgartirasiz?',{inline_keyboard:rows})
   }
   const busy=['chat','queue'].includes(user.phase)
+  if(!cb && t==='📊 Statistikam'){
+    if(!complete) return me('Avval profilingizni yakunlang.')
+    const stats=one('SELECT COUNT(*) AS total, COUNT(DISTINCT CASE WHEN a=? THEN b ELSE a END) AS peers FROM rooms WHERE a=? OR b=?',id,id,id)
+    const votes=one('SELECT COUNT(*) AS total FROM daily_votes WHERE user=?',id)
+    return me('📊 Statistikam\n\n💬 Boshlangan suhbatlar: '+stats.total+'\n👥 Turli suhbatdoshlar: '+stats.peers+'\n☀️ Kun savoliga javoblar: '+votes.total)
+  }
   if(cb?.data?.startsWith('profile:')){
     enqueue('answerCallbackQuery',{callback_query_id:cb.id})
     if(busy || !complete) return me('Profilni bosh menyuda oching.')
@@ -140,10 +147,13 @@ export function processUpdate(run, update, owner, origin) {
       run('UPDATE people SET interest=? WHERE id=?',mini.slice(9),id)
       me('Qiziqishingiz saqlandi.',home);return profileCard()
     }
-    if(['👤 Profilim','⚙️ Sozlamalar'].includes(t)) {
+    if(t==='⚙️ Sozlamalar') return me('⚙️ Sozlamalar va bo‘limlar',[
+      ['👤 Profilim','🤝 Tanishlarim'],['☀️ Kun savoli','🆕 Yangiliklar'],[back]
+    ])
+    if(t==='👤 Profilim') {
       me('Profilingiz tayyor.',home);return profileCard()
     }
-    if([back,'/menu','/cancel','/start'].includes(t)) return me('🏠 Bosh menyu'+(String(id)===String(owner)?' · Siz adminsiz.':'')+'\n\nSuhbatdosh topish uchun «💬 Suhbat boshlash»ni bosing yoki «☀️ Kun savoli»da ovoz bering.',home)
+    if([back,'/menu','/cancel','/start'].includes(t)) return me('🏠 Bosh menyu'+(String(id)===String(owner)?' · Siz adminsiz.':'')+'\n\nSuhbatdosh topish uchun «🔎 Suhbat izlash»ni bosing.',home)
   }
   if(!cb && busy && (mini || ['👤 Profilim','⚙️ Sozlamalar',back,'🤝 Tanishlarim','💬 Suhbat boshlash','/menu'].includes(t))) return me(user.phase==='queue'?'Qidiruv davom etyapti.':'Suhbat davom etyapti.',user.phase==='chat'?chat:[['❌ Qidiruvni bekor qilish']])
   if(!cb && user.phase.startsWith('edit_')){
