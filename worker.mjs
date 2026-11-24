@@ -16,39 +16,62 @@ const geminiModelsUrl='https://generativelanguage.googleapis.com/v1beta/models/'
 const primaryModel='gemini-3.5-flash-lite'
 async function generateReply(apiKey,messages) {
   if(!apiKey) throw Error('GEMINI_API_KEY missing')
+  const first=new AbortController()
+  const backup=new AbortController()
+  const retryable=err=>['TimeoutError','TypeError'].includes(err.name) || err.message==='Gemini empty reply' || /^gemini-api-(500|502|503|504|404)-/.test(err.message)
+  let startBackup
+  const delay=new Promise(resolve=>{startBackup=resolve})
+  const timer=setTimeout(startBackup,2500)
+  const preferred=requestGemini(apiKey,messages,'gemini-flash-latest',first.signal)
   try {
-    return await requestGemini(apiKey,messages,'gemini-flash-latest')
-  } catch(err) {
-    if(err.name!=='TimeoutError' && err.name!=='TypeError' && err.message!=='Gemini empty reply' && !/^gemini-api-(500|502|503|504|404)-/.test(err.message)) throw err
-    return requestGemini(apiKey,messages,primaryModel)
+    const outcome=await Promise.race([preferred.then(text=>({text}),err=>({err})),delay.then(()=>({slow:true}))])
+    if(outcome.text) return outcome.text
+    if(outcome.err && !retryable(outcome.err)) throw outcome.err
+    const alternate=requestGemini(apiKey,messages,primaryModel,backup.signal)
+    if(outcome.err) return await alternate
+    try {return await Promise.any([preferred,alternate])}
+    catch(err){throw err.errors.find(retryable) || err.errors[0]}
+  } finally {
+    clearTimeout(timer)
+    first.abort()
+    backup.abort()
   }
 }
-async function requestGemini(apiKey,messages,model) {
+async function requestGemini(apiKey,messages,model,cancel) {
   const compatibility=model!==primaryModel
   const instruction='Sen Gaplashamizda botidagi Google Gemini yordamchisisan. Tabiiy, qisqa o‘zbekcha yoz. Darhol suhbatdoshning gapiga javob ber. Har safar salomlashma, xizmat taklif qilma, sarlavha yoki ism qo‘shma.'
   const url=compatibility?'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions':geminiModelsUrl+model+':streamGenerateContent'
   const auth=compatibility?{Authorization:'Bearer '+apiKey.trim()}:{'x-goog-api-key':apiKey.trim()}
-  const response=await fetch(url,{
-    method:'POST',
-    headers:{'Content-Type':'application/json',...auth},
-    signal:AbortSignal.timeout(12000),
-    body:JSON.stringify(compatibility?{model,messages:[{role:'system',content:instruction},...messages],max_tokens:600}:{
-      systemInstruction:{parts:[{text:instruction}]},
-      contents:messages.map(m=>({role:m.role==='assistant'?'model':'user',parts:[{text:m.content}]})),
-      generationConfig:{maxOutputTokens:600,thinkingConfig:{thinkingLevel:'MINIMAL'}}
+  const controller=new AbortController()
+  const abort=()=>controller.abort()
+  cancel.addEventListener('abort',abort,{once:true})
+  const deadline=setTimeout(()=>controller.abort(new DOMException('Deadline','TimeoutError')),12000)
+  try {
+    const response=await fetch(url,{
+      method:'POST',
+      headers:{'Content-Type':'application/json',...auth},
+      signal:controller.signal,
+      body:JSON.stringify(compatibility?{model,messages:[{role:'system',content:instruction},...messages],max_tokens:600}:{
+        systemInstruction:{parts:[{text:instruction}]},
+        contents:messages.map(m=>({role:m.role==='assistant'?'model':'user',parts:[{text:m.content}]})),
+        generationConfig:{maxOutputTokens:600,thinkingConfig:{thinkingLevel:'MINIMAL'}}
+      })
     })
-  })
-  if(!response.ok) {
-    const {error}=await response.json().catch(()=>({}))
-    const reason=error?.details?.find(detail=>detail.reason)?.reason || error?.status
-    const code=/^[A-Z_]{1,80}$/.test(reason)?reason:'UNKNOWN'
-    throw Error('gemini-api-'+response.status+'-'+code)
+    if(!response.ok) {
+      const {error}=await response.json().catch(()=>({}))
+      const reason=error?.details?.find(detail=>detail.reason)?.reason || error?.status
+      const code=/^[A-Z_]{1,80}$/.test(reason)?reason:'UNKNOWN'
+      throw Error('gemini-api-'+response.status+'-'+code)
+    }
+    const result=await response.json()
+    const chunks=Array.isArray(result)?result:[result]
+    const reply=compatibility?result.choices?.[0]?.message?.content?.trim():chunks.flatMap(chunk=>chunk.candidates?.[0]?.content?.parts || []).filter(p=>!p.thought && typeof p.text==='string').map(p=>p.text).join('').trim()
+    if(!reply) throw Error('Gemini empty reply')
+    return reply.slice(0,3200)
+  } finally {
+    clearTimeout(deadline)
+    cancel.removeEventListener('abort',abort)
   }
-  const result=await response.json()
-  const chunks=Array.isArray(result)?result:[result]
-  const reply=compatibility?result.choices?.[0]?.message?.content?.trim():chunks.flatMap(chunk=>chunk.candidates?.[0]?.content?.parts || []).filter(p=>!p.thought && typeof p.text==='string').map(p=>p.text).join('').trim()
-  if(!reply) throw Error('Gemini empty reply')
-  return reply.slice(0,3200)
 }
 const interests = topics
 const questions = {
@@ -400,7 +423,7 @@ export function processUpdate(run, update, owner, origin, geminiReady=true) {
         return me('Bugungi AI limiti tugadi.')
       run('UPDATE ai_budget SET used=used+1 WHERE day=?',day)
       run('INSERT INTO gemini_jobs(request,user,session,token,input) VALUES(?,?,?,?,?)',update.update_id,id,session,token,t.slice(0,2000))
-      return {request:update.update_id}
+      return {request:update.update_id,user:id}
 
     }
     return me('Hali suhbatdosh qidiryapman.')
@@ -471,6 +494,7 @@ export class Lobby {
     this.sql=ctx.storage.sql
     this.sql.exec(schema)
     this.tail=Promise.resolve()
+    this.aiWorkers=new Map()
   }
   async fetch(request) {
     const update=await request.json()
@@ -505,12 +529,27 @@ export class Lobby {
     })
     if((aiTask?.request || run('SELECT 1 FROM gemini_jobs LIMIT 1').length) && await this.ctx.storage.getAlarm()===null)
       await this.ctx.storage.setAlarm(Date.now())
+    if(aiTask?.request) this.ctx.waitUntil(this.workFor(run,aiTask.user))
     return this.drain(run)
+  }
+  workFor(run,user) {
+    if(this.aiWorkers.has(user)) return this.aiWorkers.get(user)
+    const work=this.processUser(run,user).finally(()=>this.aiWorkers.delete(user))
+    this.aiWorkers.set(user,work)
+    return work
   }
   async alarm() {
     const run=(q,...args)=>this.sql.exec(q,...args).toArray()
-    const task=run('SELECT * FROM gemini_jobs ORDER BY request LIMIT 1')[0]
-    if(task){
+    const users=run('SELECT user FROM gemini_jobs GROUP BY user ORDER BY min(request) LIMIT 8')
+    await Promise.all(users.map(({user})=>this.workFor(run,user)))
+    const result=await this.flush(run)
+    if(!result.ok || run('SELECT 1 FROM gemini_jobs LIMIT 1').length)
+      await this.ctx.storage.setAlarm(Date.now()+(result.ok?0:1000))
+  }
+  async processUser(run,user) {
+    for(;;){
+      const task=run('SELECT * FROM gemini_jobs WHERE user=? ORDER BY request LIMIT 1',user)[0]
+      if(!task) return
       const dialog=run('SELECT history FROM gemini_dialog WHERE user=? AND session=?',task.user,task.session)[0]
       if(dialog){
         const messages=[...JSON.parse(dialog.history).slice(-6),{role:'user',content:task.input}]
@@ -520,8 +559,8 @@ export class Lobby {
         } catch(err) {
           if(!task.retried && (err.name==='TimeoutError' || err.name==='TypeError' || /^gemini-api-5/.test(err.message))){
             run('UPDATE gemini_jobs SET retried=1 WHERE request=?',task.request)
-            await this.ctx.storage.setAlarm(Date.now()+1500)
-            return
+            await new Promise(resolve=>setTimeout(resolve,350))
+            continue
           }
           console.warn('Gemini request failed',/^gemini-api-/.test(err.message)?err.message:err.name)
         }
@@ -532,12 +571,13 @@ export class Lobby {
           run('INSERT INTO delivery(update_id,method,body) VALUES(?,?,?)',task.request,'sendMessage',JSON.stringify(body))
         })
       } else run('DELETE FROM gemini_jobs WHERE request=?',task.request)
+      if(!(await this.flush(run)).ok) return
     }
+  }
+  flush(run){
     const finish=this.tail.then(()=>this.drain(run))
     this.tail=finish.catch(()=>{})
-    const result=await finish
-    if(!result.ok || run('SELECT 1 FROM gemini_jobs LIMIT 1').length)
-      await this.ctx.storage.setAlarm(Date.now()+(result.ok?0:1500))
+    return finish
   }
   async drain(run) {
     for (;;) {

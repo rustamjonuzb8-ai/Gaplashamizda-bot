@@ -233,6 +233,7 @@ const stop='⏹ AI suhbatini tugatish'
 assert(opened[0].reply_markup.keyboard.flat().some(b=>b.text===stop))
 assert(!opened[1].reply_markup)
 assert.equal(admin(aiUser,'🤖 AI bilan gaplashish').length,1)
+lobby.aiWorkers=new Map()
 lobby.tail=Promise.resolve()
 lobby.env.GEMINI_API_KEY='test-key'
 lobby.ctx.storage.setAlarm=async()=>{}
@@ -259,3 +260,34 @@ try {
   assert.equal(run('SELECT * FROM gemini_jobs').length,0)
   assert.equal(run('SELECT phase FROM people WHERE id=?',aiUser)[0].phase,'queue')
 } finally {globalThis.fetch=originalFetch}
+
+const deliveries=[]
+const pending=[]
+lobby.ctx.waitUntil=promise=>pending.push(promise)
+lobby.ctx.storage.getAlarm=async()=>null
+let release
+const slow=new Promise(resolve=>{release=resolve})
+for(const id of [811,812]){
+  run("INSERT INTO people(id,phase,age,interest) VALUES(?,'queue',24,'Kino')",id)
+  admin(id,'🤖 AI bilan gaplashish')
+}
+try {
+  globalThis.fetch=async(url,opts)=>{
+    const body=JSON.parse(opts.body)
+    if(url.includes('googleapis.com')){
+      const input=body.messages.at(-1).content
+      if(input==='slow') await slow
+      return Response.json({choices:[{message:{content:'reply '+input}}]})
+    }
+    deliveries.push(body)
+    return new Response()
+  }
+  for(const [id,t] of [[811,'slow'],[811,'next'],[812,'fast']])
+    await lobby.handle({update_id:++seq,message:{from:{id},chat:chat(id),text:t}})
+  await pending.at(-1)
+  assert(deliveries.some(m=>m.chat_id===812 && m.text==='reply fast'))
+  assert(!deliveries.some(m=>m.text==='reply next'))
+  release()
+  await Promise.all(pending)
+  assert.deepEqual(deliveries.filter(m=>m.chat_id===811 && m.text.startsWith('reply ')).map(m=>m.text),['reply slow','reply next'])
+} finally {release();globalThis.fetch=originalFetch}
