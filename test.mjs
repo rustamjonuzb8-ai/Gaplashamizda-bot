@@ -43,6 +43,7 @@ send(101,'invite:1',true)
 send(202,'accept:1',true)
 assert.equal(send(202,'salom')[0].chat_id,101)
 send(202,'/report')
+send(202,'Haqorat qildi')
 assert.equal(run('SELECT * FROM reports').length,1)
 assert(!send(202,'thanks:1:2',true).some(x=>x.chat_id===101))
 send(202,'💬 Suhbat boshlash')
@@ -185,7 +186,11 @@ for (const id of [771,772]) {
 for (const text of ['/help','💬 Yordam','❌ Qidiruvni bekor qilish']) {
   assert(admin(771,text).every(x=>x.chat_id===771))
 }
-const alerts=admin(771,'/report')
+admin(771,'/report')
+const alerts=admin(771,'Reklama yubordi')
+assert.equal(run('SELECT * FROM bans WHERE user=772').length,0)
+const caseId=run('SELECT rowid AS id FROM reports WHERE reporter=771')[0].id
+assert.match(admin(900,'adm:report:'+caseId,true).at(-1).text,/Reklama yubordi/)
 assert(alerts.some(x=>x.chat_id===900 && x.reply_markup.inline_keyboard[0][0].callback_data.startsWith('adm:report:')))
 const menu=admin(771,'/start')[0].reply_markup.keyboard.flat()
 assert(menu.every(b=>typeof b.text==='string'))
