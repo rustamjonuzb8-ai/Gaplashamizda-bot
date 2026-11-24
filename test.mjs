@@ -17,11 +17,16 @@ for(const id of [101,202,303]) {
   for(const s of ['24','Ayol','Toshkent','Kino']) send(id,s)
   const result = send(id,'💬 Suhbat boshlash')
   if (id===101) {
-    const old = result.at(-1).reply_markup.inline_keyboard[1][0].callback_data
+    assert.equal(result.length,1)
+    assert(result[0].reply_markup.keyboard.flat().some(b=>b.text==='🤖 AI bilan gaplashish'))
+    const prompt=send(id,'🤖 AI bilan gaplashish')[0]
+    assert(prompt.reply_markup.force_reply)
     send(id,'❌ Qidiruvni bekor qilish')
-    const fresh = send(id,'💬 Suhbat boshlash').at(-1).reply_markup.inline_keyboard[1][0].callback_data
-    assert.match(send(id,old,true).at(-1).text,/avvalgi/)
-    assert.match(send(id,fresh,true).at(-1).text,/tanlandi/)
+    send(id,'💬 Suhbat boshlash')
+    const session=run('SELECT session FROM search_topic WHERE user=?',id)[0].session
+    const old=Number(prompt.text.match(/· (\d+)/)[1])
+    assert.match(send(id,'starter:'+old+':1',true).at(-1).text,/avvalgi/)
+    assert.match(send(id,'starter:'+session+':1',true).at(-1).text,/tanlandi/)
     send(id,'🌍 Barcha shaharlardan izlash')
   }
   if (id===202) assert.deepEqual(result.filter(x=>x.text?.includes('kichik yaxshilik')).map(x=>x.chat_id).sort(),[101,202])
@@ -219,3 +224,27 @@ try {
   assert.equal(run('SELECT * FROM delivery').length,0)
 } finally {globalThis.fetch=originalFetch}
 console.log('Yordam, eskirgan tugma, admin xabarnomasi va Telegram 403 holati tekshirildi.')
+
+const aiUser=810
+run("INSERT INTO people(id,phase,city,age,interest) VALUES(?,'queue','Navoiy',24,'Kino')",aiUser)
+const aiPrompt=admin(aiUser,'🤖 AI bilan gaplashish')[0]
+function answerAI(){
+  return processUpdate(run,{update_id:++seq,message:{from:{id:aiUser},chat:chat(aiUser),text:'Yaxshi',reply_to_message:{from:{is_bot:true},text:aiPrompt.text}}},900)
+}
+const first=answerAI()
+assert.equal(first.id,aiUser)
+lobby.tail=Promise.resolve()
+lobby.env.AI={run:async()=>({response:'Bugun sizni nima xursand qildi?'})}
+try {
+  globalThis.fetch=async(url,opts)=>{sent.push(JSON.parse(opts.body));return new Response(null,{status:200})}
+  await lobby.replyAI(run,first)
+  assert(sent.at(-1).text.includes('Bugun sizni nima xursand qildi?'))
+  answerAI()
+  const third=answerAI()
+  answerAI()
+  assert.match(JSON.parse(run('SELECT body FROM delivery WHERE update_id=?',seq)[0].body).text,/topishmoq/)
+  admin(aiUser,'❌ Qidiruvni bekor qilish')
+  const before=sent.length
+  await lobby.replyAI(run,third)
+  assert.equal(sent.length,before)
+} finally {globalThis.fetch=originalFetch}
