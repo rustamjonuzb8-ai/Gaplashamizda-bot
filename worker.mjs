@@ -10,14 +10,23 @@ const chat = [['🎭 Ikkidan biri','🎲 Savol tanlash'],['⏭ Keyingi'], ['👋
 const aiButton='🤖 AI bilan gaplashish'
 const aiStopKey=token=>inline('⏹ AI suhbatini tugatish','aiStop:'+token)
 const queueKeys=[[aiButton,'🌍 Barcha shaharlardan izlash'],['❌ Qidiruvni bekor qilish']]
-async function generateReply(ai,messages) {
-  const result=await ai.run('@cf/meta/llama-3.1-8b-instruct-fast',{
-    messages:[{role:'system',content:'Sen Gaplashamizda botining AI yordamchisisan. Foydalanuvchining mavzusida tabiiy o‘zbek tilida aniq va qisqa javob ber. Oldingi gaplarni hisobga ol.'},...messages],
-    max_tokens:240
+async function generateReply(apiKey,messages) {
+  if(!apiKey) throw Error('GEMINI_API_KEY missing')
+  const response=await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent',{
+    method:'POST',
+    headers:{'Content-Type':'application/json','x-goog-api-key':apiKey},
+    signal:AbortSignal.timeout(25000),
+    body:JSON.stringify({
+      systemInstruction:{parts:[{text:'Sen Gaplashamizda botidagi Google Gemini yordamchisisan. O‘zbek tilida, suhbat mavzusiga mos javob ber.'}]},
+      contents:messages.map(m=>({role:m.role==='assistant'?'model':'user',parts:[{text:m.content}]})),
+      generationConfig:{maxOutputTokens:600}
+    })
   })
-  const text=result?.response?.trim()
-  if(!text) throw Error('AI returned empty text')
-  return text.slice(0,2000)
+  if(!response.ok) throw Error('Gemini HTTP '+response.status)
+  const result=await response.json()
+  const reply=result.candidates?.[0]?.content?.parts?.filter(p=>!p.thought && typeof p.text==='string').map(p=>p.text).join('').trim()
+  if(!reply) throw Error('Gemini empty reply')
+  return reply.slice(0,3200)
 }
 const interests = topics
 const questions = {
@@ -58,11 +67,11 @@ const inline = (label, data) => ({inline_keyboard: [[{text: label, callback_data
 export const schema = adminSchema + premiumSchema + gameSchema + `
 CREATE TABLE IF NOT EXISTS queue_turns(user INTEGER PRIMARY KEY, session INTEGER, turns INTEGER, request INTEGER);
 CREATE TABLE IF NOT EXISTS ai_handoff(user INTEGER PRIMARY KEY, room INTEGER);
-CREATE TABLE IF NOT EXISTS ai_dialog(user INTEGER PRIMARY KEY,session INTEGER,history TEXT);
+CREATE TABLE IF NOT EXISTS gemini_dialog(user INTEGER PRIMARY KEY,session INTEGER,history TEXT);
 CREATE TABLE IF NOT EXISTS ai_budget(day INTEGER PRIMARY KEY, used INTEGER);
 CREATE TABLE IF NOT EXISTS daily_votes(day INTEGER,user INTEGER,pick INTEGER,PRIMARY KEY(day,user));
 CREATE TABLE IF NOT EXISTS people(id INTEGER PRIMARY KEY, phase TEXT DEFAULT 'age', age INTEGER, city TEXT DEFAULT '', interest TEXT DEFAULT '', gender TEXT DEFAULT '', room INTEGER DEFAULT 0, waiting INTEGER DEFAULT 0, wide INTEGER DEFAULT 0, previous INTEGER DEFAULT 0);
-CREATE TRIGGER IF NOT EXISTS clear_ai_dialog AFTER UPDATE OF phase ON people WHEN OLD.phase='queue' AND NEW.phase<>'queue' BEGIN DELETE FROM ai_dialog WHERE user=NEW.id; END;
+CREATE TRIGGER IF NOT EXISTS clear_gemini_dialog AFTER UPDATE OF phase ON people WHEN OLD.phase='queue' AND NEW.phase<>'queue' BEGIN DELETE FROM gemini_dialog WHERE user=NEW.id; END;
 CREATE TABLE IF NOT EXISTS search_topic(user INTEGER PRIMARY KEY, session INTEGER, choice INTEGER);
 CREATE TABLE IF NOT EXISTS room_thanks(room INTEGER, sender INTEGER, PRIMARY KEY(room,sender));
 CREATE INDEX IF NOT EXISTS queue ON people(phase,waiting);
@@ -209,7 +218,7 @@ export function processUpdate(run, update, owner, origin) {
     run('DELETE FROM invites WHERE room IN (SELECT id FROM rooms WHERE a IN (?,?) OR b IN (?,?))',a.id,b.id,a.id,b.id)
     const r = one('INSERT INTO rooms(a,b) VALUES(?,?) RETURNING id',a.id,b.id).id
     const pick = one("SELECT choice FROM search_topic WHERE user IN (?,?) AND user IN (SELECT id FROM people WHERE phase='queue') AND choice IS NOT NULL ORDER BY session LIMIT 1",a.id,b.id)
-    run('INSERT OR REPLACE INTO ai_handoff SELECT user,? FROM ai_dialog WHERE user IN (?,?)',r,a.id,b.id)
+    run('INSERT OR REPLACE INTO ai_handoff SELECT user,? FROM gemini_dialog WHERE user IN (?,?)',r,a.id,b.id)
     run('DELETE FROM search_topic WHERE user IN (?,?)',a.id,b.id)
     run("UPDATE people SET room=?, phase='chat', waiting=0 WHERE id IN (?,?)",r,a.id,b.id)
     for (const [self,peer] of [[a,b],[b,a]]) {
@@ -242,7 +251,7 @@ export function processUpdate(run, update, owner, origin) {
     if(action==='aiStop') {
       const stopped=user.phase==='queue' && run('DELETE FROM queue_turns WHERE user=? AND turns=? RETURNING user',id,Number(num)||0).length
       if(!stopped) return me('Bu AI suhbati allaqachon tugagan.')
-      run('DELETE FROM ai_dialog WHERE user=?',id)
+      run('DELETE FROM gemini_dialog WHERE user=?',id)
       return me('AI suhbati tugadi. Suhbatdosh izlash davom etyapti.',queueKeys)
     }
     if (action==='starter') {
@@ -341,18 +350,18 @@ export function processUpdate(run, update, owner, origin) {
     if(aiTag && Number(aiTag[1])!==session) return me('Bu avvalgi AI suhbatiga javob. Yangi xabar yozing.',queueKeys)
     if(t==='/ai_stop'){
       run('DELETE FROM queue_turns WHERE user=?',id)
-      run('DELETE FROM ai_dialog WHERE user=?',id)
+      run('DELETE FROM gemini_dialog WHERE user=?',id)
       return me('AI suhbati tugadi. Suhbatdosh izlash davom etyapti.',queueKeys)
     }
     if(t===aiButton)
-      run("INSERT INTO ai_dialog VALUES(?,?,'[]') ON CONFLICT(user) DO UPDATE SET session=excluded.session,history='[]' WHERE session<>excluded.session",id,session)
-    const dialog=one('SELECT history FROM ai_dialog WHERE user=? AND session=?',id,session)
+      run("INSERT INTO gemini_dialog VALUES(?,?,'[]') ON CONFLICT(user) DO UPDATE SET session=excluded.session,history='[]' WHERE session<>excluded.session",id,session)
+    const dialog=one('SELECT history FROM gemini_dialog WHERE user=? AND session=?',id,session)
     let token
     if(dialog){
       run('INSERT INTO queue_turns VALUES(?,?,?,0) ON CONFLICT(user) DO UPDATE SET session=excluded.session,turns=excluded.turns,request=0 WHERE session<>excluded.session OR turns=0',id,session,update.update_id)
       token=one('SELECT turns FROM queue_turns WHERE user=?',id).turns
     }
-    if(t===aiButton) return say(id,'🤖 AI bilan suhbat ochildi. Istagan mavzuda oddiy xabar yozing. Suhbatdosh izlash davom etyapti.',aiStopKey(token))
+    if(t===aiButton) return say(id,'🤖 Google Gemini bilan suhbat ochildi. Shu yerda yozgan AI xabarlaringiz javob olish uchun Google’ga yuboriladi. Istagan mavzuda oddiy xabar yozing.',aiStopKey(token))
     if(dialog && t && !t.startsWith('/')) {
       const day=Math.floor((Date.now()+5*3600000)/86400000)
       run('DELETE FROM ai_budget WHERE day<>?',day)
@@ -361,7 +370,7 @@ export function processUpdate(run, update, owner, origin) {
         return say(id,'Bugungi AI limiti tugadi. Suhbatdosh qidirish davom etyapti.',aiStopKey(token))
       run('UPDATE ai_budget SET used=used+1 WHERE day=?',day)
       const messages=[...JSON.parse(dialog.history).slice(-6),{role:'user',content:t.slice(0,2000)}]
-      run('UPDATE ai_dialog SET history=? WHERE user=?',JSON.stringify(messages),id)
+      run('UPDATE gemini_dialog SET history=? WHERE user=?',JSON.stringify(messages),id)
       run('UPDATE queue_turns SET request=? WHERE user=?',update.update_id,id)
       return {id,session,token,request:update.update_id,messages}
     }
@@ -438,7 +447,7 @@ export class Lobby {
     const update=await request.json()
     if(update.diagnostic==='ai-check' && !update.update_id) {
       const word=['anor','olma','behi'][Math.floor(Math.random()*3)]
-      const reply=await generateReply(this.env.AI,[{role:'user',content:'Men tanlagan meva: '+word},{role:'assistant',content:'Tushundim.'},{role:'user',content:'Qaysi mevani tanladim? Faqat meva nomini yoz.'}])
+      const reply=await generateReply(this.env.GEMINI_API_KEY,[{role:'user',content:'Men tanlagan meva: '+word},{role:'assistant',content:'Tushundim.'},{role:'user',content:'Qaysi mevani tanladim? Faqat meva nomini yoz.'}])
       return new Response(reply.toLowerCase().includes(word)?'model-ok':'model-answer-mismatch')
     }
     const work=this.tail.then(()=>this.handle(update,new URL(request.url).origin))
@@ -459,14 +468,14 @@ export class Lobby {
   async replyAI(run,task) {
     let text
     try {
-      text=await generateReply(this.env.AI,task.messages)
+      text=await generateReply(this.env.GEMINI_API_KEY,task.messages)
     } catch (err) {
       console.warn('queue AI request failed',err?.name)
     }
     const finish=this.tail.then(async()=>{
       const active=run("SELECT 1 FROM queue_turns a JOIN search_topic s ON s.user=a.user AND s.session=a.session JOIN people p ON p.id=a.user WHERE p.phase='queue' AND a.user=? AND a.request=?",task.id,task.request)
       if(!active.length) return
-      if(text) run('UPDATE ai_dialog SET history=? WHERE user=? AND session=?',JSON.stringify([...task.messages,{role:'assistant',content:text}].slice(-6)),task.id,task.session)
+      if(text) run('UPDATE gemini_dialog SET history=? WHERE user=? AND session=?',JSON.stringify([...task.messages,{role:'assistant',content:text}].slice(-6)),task.id,task.session)
       const body={chat_id:task.id,text:text?'🤖 AI · '+task.session+'\n'+text:'AI xizmatidan javob kelmadi. Birozdan keyin qayta yozing.',reply_markup:aiStopKey(task.token),protect_content:true}
       run('INSERT INTO delivery(update_id,method,body) VALUES(?,?,?)',task.request,'sendMessage',JSON.stringify(body))
       await this.drain(run)
