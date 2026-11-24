@@ -15,11 +15,11 @@ async function generateReply(apiKey,messages) {
   const response=await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent',{
     method:'POST',
     headers:{'Content-Type':'application/json','x-goog-api-key':apiKey.trim()},
-    signal:AbortSignal.timeout(25000),
+    signal:AbortSignal.timeout(60000),
     body:JSON.stringify({
       systemInstruction:{parts:[{text:'Sen Gaplashamizda botidagi Google Gemini yordamchisisan. O‘zbek tilida, suhbat mavzusiga mos javob ber.'}]},
       contents:messages.map(m=>({role:m.role==='assistant'?'model':'user',parts:[{text:m.content}]})),
-      generationConfig:{maxOutputTokens:600}
+      generationConfig:{maxOutputTokens:600,thinkingConfig:{thinkingLevel:'MINIMAL'}}
     })
   })
   if(!response.ok) {
@@ -460,7 +460,7 @@ export class Lobby {
         return new Response(reply.toLowerCase().includes(word)?'model-ok':'model-answer-mismatch')
       } catch(err) {
         const code=/^gemini-api-\d{3}-[A-Z_]+$/.test(err.message)?err.message:
-          err.message==='Gemini empty reply'?'gemini-empty-reply':'gemini-request-failed'
+          err.name==='TimeoutError'?'gemini-timeout':err.message==='Gemini empty reply'?'gemini-empty-reply':'gemini-request-failed'
         return new Response(code,{status:502})
       }
     }
