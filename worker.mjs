@@ -7,6 +7,14 @@ const back = '🏠 Bosh menyu'
 const editFields = {age:'Yosh', gender:'Jins', city:'Shahar', interest:'Qiziqish'}
 const button = (text,callback_data) => ({text,callback_data})
 const chat = [['🎭 Ikkidan biri','🎲 Savol tanlash'],['⏭ Keyingi'], ['👋 Tugatish', '🚩 Shikoyat qilish']]
+const aiButton='🤖 AI bilan gaplashish'
+const queueKeys=[[aiButton,'🌍 Barcha shaharlardan izlash'],['❌ Qidiruvni bekor qilish']]
+const aiReply={force_reply:true,input_field_placeholder:'AI yordamchisiga javob yozing'}
+const riddles=[
+  ['Qaysi narsa quritgani sari o‘zi ho‘l bo‘ladi?', 'Sochiq'],
+  ['Nima sizniki, lekin boshqalar uni sizdan ko‘proq ishlatadi?', 'Ismingiz'],
+  ['Qaysi narsani buzsangiz, ovoz chiqmaydi?', 'Sukunat']
+]
 const interests = topics
 const questions = {
   Kino: 'Qaysi filmni yana bir marta ko‘rardingiz?',
@@ -44,6 +52,8 @@ function colorButtons(markup) {
 const keyboard = rows => ({keyboard: rows, resize_keyboard: true})
 const inline = (label, data) => ({inline_keyboard: [[{text: label, callback_data: data}]]})
 export const schema = adminSchema + premiumSchema + gameSchema + `
+CREATE TABLE IF NOT EXISTS queue_turns(user INTEGER PRIMARY KEY, session INTEGER, turns INTEGER, request INTEGER);
+CREATE TABLE IF NOT EXISTS ai_budget(day INTEGER PRIMARY KEY, used INTEGER);
 CREATE TABLE IF NOT EXISTS daily_votes(day INTEGER,user INTEGER,pick INTEGER,PRIMARY KEY(day,user));
 CREATE TABLE IF NOT EXISTS people(id INTEGER PRIMARY KEY, phase TEXT DEFAULT 'age', age INTEGER, city TEXT DEFAULT '', interest TEXT DEFAULT '', gender TEXT DEFAULT '', room INTEGER DEFAULT 0, waiting INTEGER DEFAULT 0, wide INTEGER DEFAULT 0, previous INTEGER DEFAULT 0);
 CREATE TABLE IF NOT EXISTS search_topic(user INTEGER PRIMARY KEY, session INTEGER, choice INTEGER);
@@ -132,7 +142,7 @@ export function processUpdate(run, update, owner, origin) {
   }
   if(t==='💬 Yordam' || t==='/help') return me('💬 Yordam\n\nSuhbatdosh topish uchun «🔎 Suhbat izlash»ni bosing. Suhbatni /stop bilan tugatishingiz mumkin.\n\nPremium tarifi yoki Stars to‘lovi bo‘yicha murojaat uchun /paysupport ni bosing.',user.phase==='ready'?home:undefined)
   if(t==='🆕 Yangiliklar'||mini==='news'){
-    return me('🆕 Gaplashamizdada yangi\n\n💭 Qidiruv paytida suhbat uchun mavzu tanlang.\n💌 Suhbat tugagach, bir marta anonim rahmat ayting.\n🎭 «Ikkidan biri»da yashirin tanlov qiling. Javoblar ikkalangiz tanlagach ochiladi.\n💎 Premium tariflarini Telegram Stars bilan xarid qiling.\n👤 Profilimda faqat kerakli ma’lumotni o‘zgartiring.\n🎲 Suhbat paytida «Savol tanlash» bilan gap boshlang.')
+    return me('🆕 Gaplashamizdada yangi\n\n💭 Qidiruv paytida AI bilan yozishing.\n💌 Suhbat tugagach, bir marta anonim rahmat ayting.\n🎭 «Ikkidan biri»da yashirin tanlov qiling. Javoblar ikkalangiz tanlagach ochiladi.\n💎 Premium tariflarini Telegram Stars bilan xarid qiling.\n👤 Profilimda faqat kerakli ma’lumotni o‘zgartiring.\n🎲 Suhbat paytida «Savol tanlash» bilan gap boshlang.')
   }
   function profileCard(){
     const p=person(id)
@@ -174,7 +184,7 @@ export function processUpdate(run, update, owner, origin) {
     }
     if([back,'/menu','/cancel','/start'].includes(t)) return me('🏠 Bosh menyu'+(String(id)===String(owner)?' · Siz adminsiz.':'')+'\n\nSuhbatdosh topish uchun «🔎 Suhbat izlash»ni bosing.',home)
   }
-  if(!cb && busy && (mini || ['👤 Profilim','⚙️ Sozlamalar',back,'🤝 Tanishlarim','💬 Suhbat boshlash','/menu'].includes(t))) return me(user.phase==='queue'?'Qidiruv davom etyapti.':'Suhbat davom etyapti.',user.phase==='chat'?chat:[['❌ Qidiruvni bekor qilish']])
+  if(!cb && busy && (mini || ['👤 Profilim','⚙️ Sozlamalar',back,'🤝 Tanishlarim','💬 Suhbat boshlash','/menu'].includes(t))) return me(user.phase==='queue'?'Qidiruv davom etyapti.':'Suhbat davom etyapti.',user.phase==='chat'?chat:queueKeys)
   if(!cb && user.phase.startsWith('edit_')){
     const field=user.phase.slice(5)
     if(!Object.hasOwn(editFields,field)) return
@@ -214,9 +224,7 @@ export function processUpdate(run, update, owner, origin) {
     run("UPDATE people SET phase='queue',waiting=?,wide=? WHERE id=?",waiting,wide,id)
     if (!user.waiting) run('DELETE FROM search_topic WHERE user=?',id)
     run('INSERT OR IGNORE INTO search_topic(user,session) VALUES(?,?)',id,update.update_id)
-    const session = one('SELECT session FROM search_topic WHERE user=?',id).session
-    me('🔎 Suhbatdosh qidiryapman. Telegramdan chiqishingiz mumkin, juft topilganda xabar keladi.',[['🌍 Barcha shaharlardan izlash','☀️ Kun savoli'],['❌ Qidiruvni bekor qilish']])
-    say(id,'💭 Bugun nima haqida gaplashamiz? Xohlasangiz, birinchi savolni tanlang. Qidiruv davom etyapti.',{inline_keyboard:optionRows(starters.map(item=>item.label),'starter:'+session+':')})
+    me('🔎 Suhbatdosh izlayapman. Topilguncha AI bilan yozishishingiz yoki Telegramdan chiqishingiz mumkin.',queueKeys)
   }
   if (cb) {
     enqueue('answerCallbackQuery',{callback_query_id:cb.id})
@@ -274,7 +282,7 @@ export function processUpdate(run, update, owner, origin) {
   if (t==='/start') {
     if(String(id)===String(owner) && !complete) say(id,'🛠 Siz bot adminisiz.',inline('Admin panelni ochish','adm:home'))
     if (user.phase==='chat') return me('Suhbat davom etyapti. Xabar yozing yoki savol tanlang.',chat)
-    if (user.phase==='queue') return me('Qidiruv davom etmoqda.',[['❌ Qidiruvni bekor qilish']])
+    if (user.phase==='queue') return me('Qidiruv davom etmoqda.',queueKeys)
     if (user.phase==='ready') return me('Salom! Gaplashamizmi? 👋',home)
     run("UPDATE people SET phase='age' WHERE id=?",id)
     return say(id,setting(run,'welcome')+'\n\n🎂 Yoshingiz nechada? '+setting(run,'age')+' yosh yoki undan katta bo‘lsangiz, yoshingizni raqam bilan yozing.',{remove_keyboard:true})
@@ -299,12 +307,36 @@ export function processUpdate(run, update, owner, origin) {
     run("UPDATE people SET phase='ready',interest=? WHERE id=?",t,id)
     me('Profil tayyor! Suhbat boshlashingiz mumkin.',home);return profileCard()
   }
+  const aiPrompt=message?.reply_to_message
+  const aiTag=aiPrompt?.from?.is_bot && /^🤖 AI · (\d+)\n/.exec(aiPrompt.text || '')
+  if (user.phase!=='queue' && (aiTag || t===aiButton)) return me('AI bilan kutish vaqti tugadi.',user.phase==='chat'?chat:home)
   if (user.phase==='queue') {
     if (t==='🌍 Barcha shaharlardan izlash') return search(1)
     if (t==='/stop' || t==='❌ Qidiruvni bekor qilish') {
       run("UPDATE people SET phase='ready',waiting=0 WHERE id=?",id)
       return me('Qidiruv to‘xtatildi.',home)
     }
+    run('INSERT OR IGNORE INTO search_topic(user,session) VALUES(?,?)',id,update.update_id)
+    const {session}=one('SELECT session FROM search_topic WHERE user=?',id)
+    const prefix='🤖 AI · '+session+'\n'
+    if(t===aiButton) return say(id,prefix+'Men AI yordamchisiman. Qidiruv davom etyapti. Shu xabarga javob yozing: bugun kayfiyatingiz qanday?',aiReply)
+    if(aiTag && Number(aiTag[1])===session && t && !t.startsWith('/')) {
+      const puzzle=riddles.findIndex(([q])=>aiPrompt.text.endsWith(q))
+      if(puzzle>=0) {
+        const [q]=riddles[(puzzle+1)%riddles.length]
+        return say(id,prefix+'Topishmoq javobi: '+riddles[puzzle][1]+'. Keyingisi: '+q,aiReply)
+      }
+      const day=Math.floor((Date.now()+5*3600000)/86400000)
+      run('DELETE FROM ai_budget WHERE day<>?',day)
+      run('INSERT OR IGNORE INTO ai_budget VALUES(?,0)',day)
+      const state=one('SELECT * FROM queue_turns WHERE user=? AND session=?',id,session)
+      if ((state?.turns||0)>=3 || one('SELECT used FROM ai_budget WHERE day=?',day).used>=100)
+        return say(id,prefix+'AI limiti tugadi. Kutguncha topishmoq: '+riddles[0][0],aiReply)
+      run('UPDATE ai_budget SET used=used+1 WHERE day=?',day)
+      run('INSERT OR REPLACE INTO queue_turns VALUES(?,?,?,?)',id,session,(state?.turns||0)+1,update.update_id)
+      return {id,session,request:update.update_id,context:aiPrompt.text.slice(prefix.length,900),input:t.slice(0,600)}
+    }
+    if(aiTag) return me('Joriy qidiruvda AI tugmasini bosib, yangi xabarga javob yozing.',queueKeys)
     return me('Hali suhbatdosh qidiryapman.')
   }
   if (user.phase==='ready') {
@@ -380,11 +412,38 @@ export class Lobby {
   }
   async handle(update,origin) {
     const run=(query,...args)=>this.sql.exec(query,...args).toArray()
+    let aiTask
     this.ctx.storage.transactionSync(()=>{
       run('DELETE FROM updates WHERE at<?',Date.now()-48*3600000)
       if (run('INSERT OR IGNORE INTO updates VALUES(?,?) RETURNING id',update.update_id,Date.now()).length)
-        processUpdate(run,update,this.env.ADMIN_ID,origin)
+        aiTask=processUpdate(run,update,this.env.ADMIN_ID,origin)
     })
+    if(aiTask?.request) this.ctx.waitUntil(this.replyAI(run,aiTask))
+    return this.drain(run)
+  }
+  async replyAI(run,task) {
+    let text
+    try {
+      const result=await this.env.AI.run('@cf/meta/llama-3.1-8b-instruct',{
+        messages:[
+          {role:'system',content:'Sen Gaplashamizda botining AI yordamchisisan. Kutayotgan odamga lotin yozuvidagi tabiiy o‘zbek tilida qisqa va do‘stona javob ber. Shaxsiy ma’lumot so‘rama. O‘zingni haqiqiy inson deb ko‘rsatma.'},
+          {role:'assistant',content:task.context},{role:'user',content:task.input}
+        ],max_tokens:140
+      })
+      text=result.response?.trim().slice(0,800)
+    } catch {}
+    const finish=this.tail.then(async()=>{
+      const active=run("SELECT 1 FROM queue_turns a JOIN search_topic s ON s.user=a.user AND s.session=a.session JOIN people p ON p.id=a.user WHERE p.phase='queue' AND a.user=? AND a.request=?",task.id,task.request)
+      if(!active.length) return
+      const fallback='AI hozir band. Kutguncha topishmoq: '+riddles[0][0]
+      const body={chat_id:task.id,text:'🤖 AI · '+task.session+'\n'+(text||fallback),reply_markup:aiReply,protect_content:true}
+      run('INSERT INTO delivery(update_id,method,body) VALUES(?,?,?)',task.request,'sendMessage',JSON.stringify(body))
+      await this.drain(run)
+    })
+    this.tail=finish.catch(()=>{})
+    await finish
+  }
+  async drain(run) {
     for (;;) {
       const job = run("SELECT * FROM delivery ORDER BY (method='answerPreCheckoutQuery') DESC,id LIMIT 1")[0]
       if (!job) break
