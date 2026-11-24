@@ -10,9 +10,10 @@ const chat = [['🎭 Ikkidan biri','🎲 Savol tanlash'],['⏭ Keyingi'], ['👋
 const aiButton='🤖 AI bilan gaplashish'
 const aiStopKey=token=>inline('⏹ AI suhbatini tugatish','aiStop:'+token)
 const queueKeys=[[aiButton,'🌍 Barcha shaharlardan izlash'],['❌ Qidiruvni bekor qilish']]
+const geminiModelUrl='https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite'
 async function generateReply(apiKey,messages) {
   if(!apiKey) throw Error('GEMINI_API_KEY missing')
-  const response=await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent',{
+  const response=await fetch(geminiModelUrl+':streamGenerateContent',{
     method:'POST',
     headers:{'Content-Type':'application/json','x-goog-api-key':apiKey.trim()},
     signal:AbortSignal.timeout(60000),
@@ -29,7 +30,8 @@ async function generateReply(apiKey,messages) {
     throw Error('gemini-api-'+response.status+'-'+code)
   }
   const result=await response.json()
-  const reply=result.candidates?.[0]?.content?.parts?.filter(p=>!p.thought && typeof p.text==='string').map(p=>p.text).join('').trim()
+  const chunks=Array.isArray(result)?result:[result]
+  const reply=chunks.flatMap(chunk=>chunk.candidates?.[0]?.content?.parts || []).filter(p=>!p.thought && typeof p.text==='string').map(p=>p.text).join('').trim()
   if(!reply) throw Error('Gemini empty reply')
   return reply.slice(0,3200)
 }
@@ -461,7 +463,12 @@ export class Lobby {
       } catch(err) {
         const code=/^gemini-api-\d{3}-[A-Z_]+$/.test(err.message)?err.message:
           err.name==='TimeoutError'?'gemini-timeout':err.message==='Gemini empty reply'?'gemini-empty-reply':'gemini-request-failed'
-        return new Response(code,{status:502})
+        let metadata='unreachable'
+        try {
+          const response=await fetch(geminiModelUrl,{headers:{'x-goog-api-key':this.env.GEMINI_API_KEY.trim()},signal:AbortSignal.timeout(10000)})
+          metadata=String(response.status)
+        } catch(err) { if(err.name==='TimeoutError') metadata='timeout' }
+        return new Response(code+'-metadata-'+metadata,{status:502})
       }
     }
     const work=this.tail.then(()=>this.handle(update,new URL(request.url).origin))
