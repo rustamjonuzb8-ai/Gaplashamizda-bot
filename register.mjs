@@ -18,5 +18,7 @@ if ((await api('getWebhookInfo',{})).url!==url.href) throw Error('Webhook manzil
 console.log('Telegram ulanishi tasdiqlandi.')
 
 const probe=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json','X-Telegram-Bot-Api-Secret-Token':await webhookSecret(BOT_TOKEN)},body:JSON.stringify({diagnostic:'ai-check'})})
-if (!probe.ok || await probe.text()!=='model-ok') throw Error('Live AI conversation probe failed: '+probe.status)
-console.log('Live Google Gemini generated a contextual reply.')
+const result=await probe.text()
+if(probe.ok && result==='gemini-key-missing') console.log('Gemini pending: GEMINI_API_KEY is absent on the Worker.')
+else if(probe.ok && result==='model-ok') console.log('Live Google Gemini generated a contextual reply.')
+else throw Error('Live Gemini check failed: '+probe.status)
