@@ -1,5 +1,8 @@
 import {plans,membership} from './premium.mjs'
 export const adminSchema = `
+CREATE TABLE IF NOT EXISTS telegram_profiles(user INTEGER PRIMARY KEY, username TEXT, name TEXT);
+CREATE TABLE IF NOT EXISTS report_drafts(reporter INTEGER PRIMARY KEY, room INTEGER, reported INTEGER);
+CREATE TABLE IF NOT EXISTS report_reasons(report INTEGER PRIMARY KEY, reason TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS activity(user INTEGER PRIMARY KEY, joined INTEGER, seen INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS activity_seen ON activity(seen);
 CREATE TABLE IF NOT EXISTS bans(user INTEGER PRIMARY KEY);
@@ -40,6 +43,8 @@ export function adminPanel({run,id,owner,cb,t,say,enqueue}) {
   const clear=()=>run('DELETE FROM admin_input WHERE owner=?',id)
   const count=(sql,...args)=>run(sql,...args)[0].n
   const blocked=user=>count('SELECT count(*) n FROM bans WHERE user=?',user)>0
+  const identity=user=>run('SELECT * FROM telegram_profiles WHERE user=?',user)[0] || {}
+  const label=p=>[p.name,p.username && '@'+p.username].filter(Boolean).join(' · ')
   function profile(user) {
     const p=run('SELECT * FROM people WHERE id=?',user)[0]
     if(!p) return show('Bunday ID topilmadi.',[back])
@@ -47,7 +52,9 @@ export function adminPanel({run,id,owner,cb,t,say,enqueue}) {
     const ban=blocked(user)
     const rows=user===id?[]:[[button(ban?'Blokdan chiqarish':'Bloklash', (ban?'unban:':'confirm:')+user)]]
     const tier=membership(run,user)
-    show(['ID '+user,tier && plans[tier.plan].title,ban?'Bloklangan':labels[p.phase],p.age && p.age+' yosh',p.city,p.interest].filter(Boolean).join(' · '),[...rows,back])
+    const tg=identity(user)
+    const url=tg.username?'https://t.me/'+tg.username:'tg://user?id='+user
+    show([label(tg),'ID '+user,tier && plans[tier.plan].title,ban?'Bloklangan':labels[p.phase],p.age && p.age+' yosh',p.city,p.interest].filter(Boolean).join(' · '),[[{text:'👤 Telegram profilini ochish',url}],...rows,back])
   }
   function settings() {
     const on=key=>setting(run,key)==='1'?'ochiq':'yopiq'
@@ -91,9 +98,9 @@ export function adminPanel({run,id,owner,cb,t,say,enqueue}) {
     show(action==='find'?'Foydalanuvchi ID raqamini yozing.':fields[arg]+'\nYangi qiymatni yozing.',[back])
   } else if(['users','reports'].includes(action) && Number.isSafeInteger(num)&&num>=0) {
     const users=action==='users'
-    const list=users?run('SELECT id FROM people ORDER BY id LIMIT 9 OFFSET ?',num):
+    const list=users?run('SELECT id,username,name FROM people LEFT JOIN telegram_profiles ON user=id ORDER BY id LIMIT 9 OFFSET ?',num):
       run('SELECT rowid AS id,reported FROM reports WHERE rowid NOT IN (SELECT report FROM reviewed) ORDER BY rowid DESC LIMIT 9 OFFSET ?',num)
-    const rows=list.slice(0,8).map(x=>[users?button('ID '+x.id,'user:'+x.id):button('Shikoyat №'+x.id,'report:'+x.id)])
+    const rows=list.slice(0,8).map(x=>[users?button(label(x)||'ID '+x.id,'user:'+x.id):button('Shikoyat №'+x.id,'report:'+x.id)])
     const nav=[]
     if(num>0) nav.push(button('‹ Oldingi',action+':'+Math.max(0,num-8)))
     if(list.length>8) nav.push(button('Keyingi ›',action+':'+(num+8)))
@@ -102,8 +109,9 @@ export function adminPanel({run,id,owner,cb,t,say,enqueue}) {
   } else if(action==='user') profile(num)
   else if(action==='report') {
     const r=run('SELECT * FROM reports WHERE rowid=?',num)[0]
-    if(r) show('Shikoyat №'+num+'\nYuborgan ID: '+r.reporter+'\nShikoyat qilingan ID: '+r.reported,
-      [[button('Profilni ochish','user:'+r.reported)],[button('Ko‘rib chiqildi','resolve:'+num)],back])
+    const reason=run('SELECT reason FROM report_reasons WHERE report=?',num)[0]?.reason || 'Eski shikoyatda sabab yozilmagan.'
+    if(r) show('Shikoyat №'+num+'\nYuborgan ID: '+r.reporter+'\nShikoyat qilingan ID: '+r.reported+'\nSabab: '+reason,
+      [[button('Profilni ochish','user:'+r.reported)],[button('Cheklovsiz yopish','resolve:'+num)],back])
   } else if(action==='resolve') {
     run('INSERT OR IGNORE INTO reviewed SELECT rowid FROM reports WHERE rowid=?',num)
     show('Shikoyat ko‘rib chiqildi.',[[button('Shikoyatlar','reports:0')],back])
