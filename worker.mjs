@@ -6,7 +6,7 @@ const legacyHome = ['💬 Suhbat boshlash','🤝 Tanishlarim','⚙️ Sozlamalar
 const back = '🏠 Bosh menyu'
 const editFields = {age:'Yosh', gender:'Jins', city:'Shahar', interest:'Qiziqish'}
 const button = (text,callback_data) => ({text,callback_data})
-const chat = [['🎭 Ikkidan biri','🎲 Savol tanlash'],['⏭ Keyingi'], ['👋 Tugatish', '🚩 Shikoyat va bloklash']]
+const chat = [['🎭 Ikkidan biri','🎲 Savol tanlash'],['⏭ Keyingi'], ['👋 Tugatish', '🚩 Shikoyat qilish']]
 const interests = topics
 const questions = {
   Kino: 'Qaysi filmni yana bir marta ko‘rardingiz?',
@@ -27,7 +27,7 @@ function optionRows(labels, prefix) {
 const replyColors = new Map([
   ['🔎 Suhbat izlash','primary'], ['💎 Premium','success'],
   ['🎭 Ikkidan biri','primary'], ['🌍 Barcha shaharlardan izlash','primary'],
-  ['❌ Qidiruvni bekor qilish','danger'], ['🚩 Shikoyat va bloklash','danger']
+  ['❌ Qidiruvni bekor qilish','danger'], ['🚩 Shikoyat qilish','danger']
 ])
 function colorButtons(markup) {
   if (markup?.keyboard) return {...markup, keyboard:markup.keyboard.map(row => row.map(item =>
@@ -86,6 +86,7 @@ export function processUpdate(run, update, owner, origin) {
   const existing = person(id)
   const now = Date.now()
   if (existing || String(id)===String(owner) || setting(run,'registration')==='1') {
+    run('INSERT OR REPLACE INTO telegram_profiles VALUES(?,?,?)',id,sender.username || '',[sender.first_name,sender.last_name].filter(Boolean).join(' '))
     run('INSERT OR IGNORE INTO people(id) VALUES(?)',id)
     run('INSERT INTO activity VALUES(?,?,?) ON CONFLICT(user) DO UPDATE SET seen=excluded.seen',id,existing?null:now,now)
   }
@@ -93,6 +94,24 @@ export function processUpdate(run, update, owner, origin) {
   if (one('SELECT user FROM bans WHERE user=?',id)) return me('Sizning botdan foydalanishingiz cheklangan.')
   const user = existing || person(id)
   if (!user) return me('Yangi profillar uchun ro‘yxatdan o‘tish hozir yopiq.')
+  const draft = one('SELECT * FROM report_drafts WHERE reporter=?',id)
+  if (draft) {
+    if (cb) {
+      enqueue('answerCallbackQuery',{callback_query_id:cb.id,text:'Shikoyat sababini yozing yoki /cancel bosing.'})
+      return
+    }
+    if (['/cancel','/start','❌ Shikoyatni bekor qilish'].includes(t)) {
+      run('DELETE FROM report_drafts WHERE reporter=?',id)
+      return me('Shikoyat bekor qilindi.',home)
+    }
+    if (!t || t.startsWith('/') || t.length>500) return me('Sababni 1–500 belgida yozing yoki /cancel bosing.')
+    const saved=one('INSERT INTO reports VALUES(?,?,?,?) RETURNING rowid AS number',draft.room,id,draft.reported,Date.now())
+    run('INSERT INTO report_reasons VALUES(?,?)',saved.number,t)
+    run('INSERT OR IGNORE INTO blocks VALUES(?,?)',id,draft.reported)
+    run('DELETE FROM report_drafts WHERE reporter=?',id)
+    if (owner) say(Number(owner),'🚩 Shikoyat №'+saved.number+'\nSabab: '+t,inline('Shikoyatni ochish','adm:report:'+saved.number))
+    return me('Shikoyat adminga yuborildi. Siz bu odam bilan qayta juftlanmaysiz. Botdan cheklashni admin hal qiladi.',home)
+  }
   const paused = () => setting(run,'matching')!=='1'
   const question = topic => setting(run,topic) || questions[topic]
   const blocked = (a,b) => one('SELECT 1 FROM blocks WHERE (a=? AND b=?) OR (a=? AND b=?)',a,b,b,a)
@@ -301,19 +320,18 @@ export function processUpdate(run, update, owner, origin) {
   }
   const room = one('SELECT * FROM rooms WHERE id=?',user.room)
   const peer = room.a===id?room.b:room.a
-  const report = ['/report','🚩 Shikoyat va bloklash'].includes(t)
+  const report = ['/report','🚩 Shikoyat qilish','🚩 Shikoyat va bloklash'].includes(t)
   const next = ['/next','⏭ Keyingi'].includes(t)
   if (report || next || ['/stop','👋 Tugatish'].includes(t)) {
     run("UPDATE rooms SET ended=1 WHERE id=?",room.id)
     run("UPDATE people SET phase='ready',room=0,previous=CASE WHEN id=? THEN ? ELSE ? END WHERE room=?",id,peer,id,room.id)
     user.previous=peer
     if (report) {
-      run('INSERT OR IGNORE INTO blocks VALUES(?,?)',id,peer)
-      const saved = one('INSERT INTO reports VALUES(?,?,?,?) RETURNING rowid AS number',room.id,id,peer,Date.now())
-      if (owner) say(Number(owner),'🚩 Yangi shikoyat №'+saved.number,inline('Shikoyatni ochish','adm:report:'+saved.number))
+      run('INSERT OR REPLACE INTO report_drafts VALUES(?,?,?)',id,room.id,peer)
     }
     for (const who of [id,peer]) {
-      say(who,report && who===id?'Shikoyat saqlandi. Suhbatdosh bloklandi.':'Suhbat tugadi.',keyboard(homeFor(who)))
+      if (report && who===id) say(id,'Suhbat tugadi. Nima sababdan shikoyat qilyapsiz? Masalan, reklama yubordi yoki haqorat qildi. Sababni o‘z so‘zingiz bilan yozing (500 belgigacha). Uni faqat admin ko‘radi.',keyboard([['❌ Shikoyatni bekor qilish']]))
+      else say(who,'Suhbat tugadi.',keyboard(homeFor(who)))
       if (!report) say(who,'Bu odam bilan yana gaplashasizmi? Ikkalangiz ham istasangiz, uni «Tanishlarim»dan topasiz.',{inline_keyboard:[[{text:'🤝 Ha, yana gaplashaman',callback_data:'yes:'+room.id},{text:'Hozircha yo‘q',callback_data:'no:'+room.id}],[button('💌 Rahmat aytish','thanks:'+room.id)]]})
     }
     if (next) search(0)
