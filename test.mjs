@@ -234,9 +234,16 @@ function answerAI(){
 const first=answerAI()
 assert.equal(first.id,aiUser)
 lobby.tail=Promise.resolve()
-lobby.env.AI={run:async()=>({response:'Bugun sizni nima xursand qildi?'})}
+lobby.env.GEMINI_API_KEY='test-key'
 try {
-  globalThis.fetch=async(url,opts)=>{sent.push(JSON.parse(opts.body));return new Response(null,{status:200})}
+  globalThis.fetch=async(url,opts)=>{
+    if(url.startsWith('https://generativelanguage.googleapis.com/')){
+      assert.equal(opts.headers['x-goog-api-key'],'test-key')
+      assert.equal(JSON.parse(opts.body).contents.at(-1).parts[0].text,'Yaxshi')
+      return Response.json({candidates:[{content:{parts:[{text:'Bugun sizni nima xursand qildi?'}]}}]})
+    }
+    sent.push(JSON.parse(opts.body));return new Response(null,{status:200})
+  }
   await lobby.replyAI(run,first)
   assert(sent.at(-1).text.includes('Bugun sizni nima xursand qildi?'))
   const third=answerAI()
