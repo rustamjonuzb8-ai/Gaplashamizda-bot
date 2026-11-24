@@ -20,7 +20,7 @@ for(const id of [101,202,303]) {
     assert.equal(result.length,1)
     assert(result[0].reply_markup.keyboard.flat().some(b=>b.text==='🤖 AI bilan gaplashish'))
     const prompt=send(id,'🤖 AI bilan gaplashish')[0]
-    assert.match(prompt.text,/oddiy xabar/)
+    assert.match(prompt.text,/Gemini/)
     const old=run('SELECT session FROM search_topic WHERE user=?',id)[0].session
     send(id,'❌ Qidiruvni bekor qilish')
     send(id,'💬 Suhbat boshlash')
@@ -227,36 +227,35 @@ console.log('Yordam, eskirgan tugma, admin xabarnomasi va Telegram 403 holati te
 
 const aiUser=810
 run("INSERT INTO people(id,phase,city,age,interest) VALUES(?,'queue','Navoiy',24,'Kino')",aiUser)
-const aiPrompt=admin(aiUser,'🤖 AI bilan gaplashish')[0]
-function answerAI(){
-  return processUpdate(run,{update_id:++seq,message:{from:{id:aiUser},chat:chat(aiUser),text:'Yaxshi'}},900)
-}
-const first=answerAI()
-assert.equal(first.id,aiUser)
+const opened=admin(aiUser,'🤖 AI bilan gaplashish')
+assert.equal(opened.length,2)
+const stop='⏹ AI suhbatini tugatish'
+assert(opened[0].reply_markup.keyboard.flat().some(b=>b.text===stop))
+assert(!opened[1].reply_markup)
+assert.equal(admin(aiUser,'🤖 AI bilan gaplashish').length,1)
 lobby.tail=Promise.resolve()
 lobby.env.GEMINI_API_KEY='test-key'
+lobby.ctx.storage.setAlarm=async()=>{}
+const generated=[]
 try {
   globalThis.fetch=async(url,opts)=>{
-    if(url.startsWith('https://generativelanguage.googleapis.com/')){
-      assert.equal(opts.headers['x-goog-api-key'],'test-key')
-      assert.equal(JSON.parse(opts.body).contents.at(-1).parts[0].text,'Yaxshi')
-      return Response.json({candidates:[{content:{parts:[{text:'Bugun sizni nima xursand qildi?'}]}}]})
+    const body=JSON.parse(opts.body)
+    if(url.includes('googleapis.com')){
+      assert.equal(opts.headers.Authorization,'Bearer test-key')
+      generated.push(body.messages)
+      return Response.json({choices:[{message:{content:'Javob '+generated.length}}]})
     }
-    sent.push(JSON.parse(opts.body));return new Response(null,{status:200})
+    sent.push(body);return new Response(null,{status:200})
   }
-  await lobby.replyAI(run,first)
-  assert(sent.at(-1).text.includes('Bugun sizni nima xursand qildi?'))
-  const third=answerAI()
-  assert(third.messages.some(m=>m.role==='assistant' && m.content.includes('xursand')))
-  const stop=aiPrompt.reply_markup.inline_keyboard[0][0].callback_data
-  assert.equal(stop,sent.at(-1).reply_markup.inline_keyboard[0][0].callback_data)
-  assert.match(admin(aiUser,stop,true).at(-1).text,/AI suhbati tugadi/)
+  admin(aiUser,'Birinchi')
+  admin(aiUser,'Ikkinchi')
+  await lobby.alarm()
+  await lobby.alarm()
+  assert.deepEqual(sent.slice(-2).map(m=>m.text),['Javob 1','Javob 2'])
+  assert(!sent.at(-1).reply_markup.inline_keyboard)
+  assert(generated[1].some(m=>m.content==='Javob 1'))
+  admin(aiUser,'Uchinchi')
+  assert.match(admin(aiUser,stop)[0].text,/AI suhbati tugadi/)
+  assert.equal(run('SELECT * FROM gemini_jobs').length,0)
   assert.equal(run('SELECT phase FROM people WHERE id=?',aiUser)[0].phase,'queue')
-  assert.equal(answerAI()?.request,undefined)
-  admin(aiUser,'🤖 AI bilan gaplashish')
-  admin(aiUser,stop,true)
-  assert.equal(answerAI().id,aiUser)
-  const before=sent.length
-  await lobby.replyAI(run,third)
-  assert.equal(sent.length,before)
 } finally {globalThis.fetch=originalFetch}
