@@ -18,16 +18,20 @@ async function generateReply(apiKey,messages) {
     return await requestGemini(apiKey,messages,primaryModel)
   } catch(err) {
     if(err.name!=='TimeoutError' && !/^gemini-api-(500|502|503|504|404)-/.test(err.message)) throw err
-    return requestGemini(apiKey,messages,'gemini-3.1-flash-lite')
+    return requestGemini(apiKey,messages,'gemini-flash-latest')
   }
 }
 async function requestGemini(apiKey,messages,model) {
-  const response=await fetch(geminiModelsUrl+model+':streamGenerateContent',{
+  const compatibility=model!==primaryModel
+  const instruction='Sen Gaplashamizda botidagi Google Gemini yordamchisisan. O‘zbek tilida, suhbat mavzusiga mos javob ber.'
+  const url=compatibility?'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions':geminiModelsUrl+model+':streamGenerateContent'
+  const auth=compatibility?{Authorization:'Bearer '+apiKey.trim()}:{'x-goog-api-key':apiKey.trim()}
+  const response=await fetch(url,{
     method:'POST',
-    headers:{'Content-Type':'application/json','x-goog-api-key':apiKey.trim()},
+    headers:{'Content-Type':'application/json',...auth},
     signal:AbortSignal.timeout(12000),
-    body:JSON.stringify({
-      systemInstruction:{parts:[{text:'Sen Gaplashamizda botidagi Google Gemini yordamchisisan. O‘zbek tilida, suhbat mavzusiga mos javob ber.'}]},
+    body:JSON.stringify(compatibility?{model,messages:[{role:'system',content:instruction},...messages],max_tokens:600}:{
+      systemInstruction:{parts:[{text:instruction}]},
       contents:messages.map(m=>({role:m.role==='assistant'?'model':'user',parts:[{text:m.content}]})),
       generationConfig:{maxOutputTokens:600,thinkingConfig:{thinkingLevel:'MINIMAL'}}
     })
@@ -40,7 +44,7 @@ async function requestGemini(apiKey,messages,model) {
   }
   const result=await response.json()
   const chunks=Array.isArray(result)?result:[result]
-  const reply=chunks.flatMap(chunk=>chunk.candidates?.[0]?.content?.parts || []).filter(p=>!p.thought && typeof p.text==='string').map(p=>p.text).join('').trim()
+  const reply=compatibility?result.choices?.[0]?.message?.content?.trim():chunks.flatMap(chunk=>chunk.candidates?.[0]?.content?.parts || []).filter(p=>!p.thought && typeof p.text==='string').map(p=>p.text).join('').trim()
   if(!reply) throw Error('Gemini empty reply')
   return reply.slice(0,3200)
 }
