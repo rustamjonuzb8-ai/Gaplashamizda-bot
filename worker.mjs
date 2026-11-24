@@ -14,11 +14,16 @@ const queueKeys=[[aiButton,'🌍 Barcha shaharlardan izlash'],['❌ Qidiruvni be
 const aiQueueKeys=[[aiStop,'🌍 Barcha shaharlardan izlash'],['❌ Qidiruvni bekor qilish']]
 const geminiModelsUrl='https://generativelanguage.googleapis.com/v1beta/models/'
 const primaryModel='gemini-3.5-flash-lite'
-async function generateReply(apiKey,messages,onPartial) {
+function temporaryGeminiError(err){
+  return ['TimeoutError','AbortError','TypeError','SyntaxError'].includes(err.name) ||
+    err.message==='Gemini empty reply' || /^gemini-api-(500|502|503|504)-/.test(err.message)
+}
+async function generateReply(apiKey,messages,onPartial,plain=false) {
   if(!apiKey) throw Error('GEMINI_API_KEY missing')
   const first=new AbortController()
   const backup=new AbortController()
-  const retryable=err=>['TimeoutError','TypeError'].includes(err.name) || err.message==='Gemini empty reply' || /^gemini-api-(500|502|503|504|404)-/.test(err.message)
+  if(plain) return requestGemini(apiKey,messages,primaryModel,first.signal,null,false)
+  const retryable=err=>temporaryGeminiError(err) || /^gemini-api-(400|404)-/.test(err.message)
   let startBackup
   const delay=new Promise(resolve=>{startBackup=resolve})
   const timer=setTimeout(startBackup,2500)
@@ -46,10 +51,13 @@ async function generateReply(apiKey,messages,onPartial) {
     backup.abort()
   }
 }
-async function requestGemini(apiKey,messages,model,cancel,onPartial) {
+async function requestGemini(apiKey,messages,model,cancel,onPartial,stream=true) {
   const compatibility=model!==primaryModel
-  const instruction='Sen Gaplashamizda botidagi Google Gemini yordamchisisan. Tabiiy, qisqa o‘zbekcha yoz. Darhol suhbatdoshning gapiga javob ber. Har safar salomlashma, xizmat taklif qilma, sarlavha yoki ism qo‘shma.'
-  const url=compatibility?'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions':geminiModelsUrl+model+':streamGenerateContent?alt=sse'
+  const firstUser=messages.findIndex(m=>m.role==='user')
+  const opening=messages.slice(0,firstUser).filter(m=>m.role==='assistant').map(m=>m.content).join(' ')
+  messages=messages.slice(firstUser)
+  const instruction='Sen Gaplashamizda botidagi Google Gemini yordamchisisan. Tabiiy, qisqa o‘zbekcha yoz. Darhol suhbatdoshning gapiga javob ber. Har safar salomlashma, xizmat taklif qilma, sarlavha yoki ism qo‘shma.'+(opening?' Oldin sen shunday degansan: '+opening:'')
+  const url=compatibility?'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions':geminiModelsUrl+model+(stream?':streamGenerateContent?alt=sse':':generateContent')
   const auth=compatibility?{Authorization:'Bearer '+apiKey.trim()}:{'x-goog-api-key':apiKey.trim()}
   const controller=new AbortController()
   const abort=()=>controller.abort()
@@ -522,6 +530,10 @@ export default {
     if (request.method==='GET' && path==='/') return new Response('Gaplashamizda')
     if (request.method!=='POST' || path!=='/telegram') return new Response('Not found',{status:404})
     if (!env.BOT_TOKEN || request.headers.get('X-Telegram-Bot-Api-Secret-Token')!==await webhookSecret(env.BOT_TOKEN)) return new Response('Forbidden',{status:403})
+    if(request.headers.get('X-Bot-Probe')==='conversation'){
+      const stub=env.LOBBY.get(env.LOBBY.newUniqueId())
+      return stub.fetch('https://internal/conversation-check',{method:'POST'})
+    }
     return env.LOBBY.get(env.LOBBY.idFromName('gaplashamizda-bot')).fetch(request)
   }
 }
@@ -535,6 +547,30 @@ export class Lobby {
     this.aiWorkers=new Map()
   }
   async fetch(request) {
+    if(new URL(request.url).pathname==='/conversation-check'){
+      const run=(q,...args)=>this.sql.exec(q,...args).toArray()
+      const user=1, replies=[]
+      // This isolated object has no Telegram recipient. Capture its outbox locally.
+      const probe=Object.create(this)
+      probe.flush=async()=>{replies.push(...run("SELECT body FROM delivery WHERE method='sendMessage'").map(x=>JSON.parse(x.body).text));run('DELETE FROM delivery');return new Response()}
+      try {
+        run("INSERT INTO people(id,phase,age,interest) VALUES(?,'queue',24,'Kino')",user)
+        let seq=0
+        const input=text=>processUpdate(run,{update_id:++seq,message:{from:{id:user},chat:{type:'private',id:user},text}},null,'',Boolean(this.env.GEMINI_API_KEY))
+        input(aiButton)
+        run('DELETE FROM delivery')
+        const word=['anor','olma','behi'][Math.floor(Math.random()*3)]
+        for(const text of ['Blmadm','Men tanlagan meva '+word+'. Eslab qol.','Qaysi mevani tanladim? Faqat nomini ayt.']){
+          const task=input(text)
+          if(!task?.request) throw Error('queue-failed')
+          await probe.processUser(run,user,false)
+          const history=JSON.parse(run('SELECT history FROM gemini_dialog WHERE user=?',user)[0].history)
+          if(history.at(-2)?.content!==text || !replies.at(-1) || history.at(-1)?.content!==replies.at(-1)) throw Error('reply-failed')
+        }
+        return new Response(replies.length===3 && replies.at(-1).toLowerCase().includes(word)?'conversation-ok':'context-failed')
+      } catch(err){return new Response(['queue-failed','reply-failed'].includes(err.message)?err.message:'probe-failed',{status:502})}
+      finally {await this.ctx.storage.deleteAll()}
+    }
     const update=await request.json()
     if(update.diagnostic==='ai-check' && !update.update_id) {
       if(!this.env.GEMINI_API_KEY) return new Response('gemini-key-missing')
@@ -586,38 +622,39 @@ export class Lobby {
     if(!result.ok || run('SELECT 1 FROM gemini_jobs LIMIT 1').length)
       await this.ctx.storage.setAlarm(Date.now()+(result.ok?0:1000))
   }
-  async processUser(run,user) {
+  async processUser(run,user,allowDraft=true) {
     for(;;){
       const task=run('SELECT * FROM gemini_jobs WHERE user=? ORDER BY request LIMIT 1',user)[0]
       if(!task) return
       const dialog=run('SELECT history FROM gemini_dialog WHERE user=? AND session=?',task.user,task.session)[0]
       if(dialog){
         const messages=[...JSON.parse(dialog.history).slice(-6),{role:'user',content:task.input}]
-        let text
+        let text,failure
         try {
           let nextPreview=0, sending=null
           const preview=partial=>{
-            if(sending || Date.now()<nextPreview || !run('SELECT 1 FROM gemini_jobs WHERE request=?',task.request).length) return
+            if(!allowDraft || sending || Date.now()<nextPreview || !run('SELECT 1 FROM gemini_jobs WHERE request=?',task.request).length) return
             nextPreview=Date.now()+1100
             sending=fetch('https://api.telegram.org/bot'+this.env.BOT_TOKEN+'/sendMessageDraft',{
               method:'POST',headers:{'Content-Type':'application/json'},signal:AbortSignal.timeout(1500),
               body:JSON.stringify({chat_id:user,draft_id:task.request || 1,text:partial})
             }).then(response=>{if(!response.ok) nextPreview=Infinity}).catch(()=>{nextPreview=Infinity}).finally(()=>{sending=null})
           }
-          try {text=await generateReply(this.env.GEMINI_API_KEY,messages,preview)}
+          try {text=await generateReply(this.env.GEMINI_API_KEY,messages,preview,Boolean(task.retried))}
           finally {if(sending) await sending}
         } catch(err) {
-          if(!task.retried && (err.name==='TimeoutError' || err.name==='TypeError' || /^gemini-api-5/.test(err.message))){
+          if(!task.retried && temporaryGeminiError(err)){
             run('UPDATE gemini_jobs SET retried=1 WHERE request=?',task.request)
             await new Promise(resolve=>setTimeout(resolve,350))
             continue
           }
+          failure=/^gemini-api-429-/.test(err.message)?'Gemini so‘rovlar limitiga yetdi. Birozdan keyin yozing.':undefined
           console.warn('Gemini request failed',/^gemini-api-/.test(err.message)?err.message:err.name)
         }
         this.ctx.storage.transactionSync(()=>{
           if(!run('DELETE FROM gemini_jobs WHERE request=? RETURNING request',task.request).length) return
           if(text) run('UPDATE gemini_dialog SET history=? WHERE user=? AND session=?',JSON.stringify([...messages,{role:'assistant',content:text}].slice(-6)),task.user,task.session)
-          const body={chat_id:task.user,text:text||'Gemini hozir javob bera olmadi. Qayta urinib ko‘ring.',reply_markup:colorButtons(keyboard(aiQueueKeys)),protect_content:true}
+          const body={chat_id:task.user,text:text||failure||'Gemini hozir javob bera olmadi. Qayta urinib ko‘ring.',reply_markup:colorButtons(keyboard(aiQueueKeys)),protect_content:true}
           run('INSERT INTO delivery(update_id,method,body) VALUES(?,?,?)',task.request,'sendMessage',JSON.stringify(body))
         })
       } else run('DELETE FROM gemini_jobs WHERE request=?',task.request)
