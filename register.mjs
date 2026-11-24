@@ -21,4 +21,4 @@ const probe=await fetch(url,{method:'POST',headers:{'Content-Type':'application/
 const result=await probe.text()
 if(probe.ok && result==='gemini-key-missing') console.log('Gemini pending: GEMINI_API_KEY is absent on the Worker.')
 else if(probe.ok && result==='model-ok') console.log('Live Google Gemini generated a contextual reply.')
-else throw Error('Live Gemini check failed: '+probe.status)
+else throw Error('Live Gemini check failed: '+probe.status+' '+(/^(gemini-[a-zA-Z0-9_-]+|model-answer-mismatch)$/.test(result)?result:'unexpected-response'))
