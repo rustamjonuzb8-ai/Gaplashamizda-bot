@@ -14,7 +14,7 @@ const queueKeys=[[aiButton,'🌍 Barcha shaharlardan izlash'],['❌ Qidiruvni be
 const aiQueueKeys=[[aiStop,'🌍 Barcha shaharlardan izlash'],['❌ Qidiruvni bekor qilish']]
 const geminiModelsUrl='https://generativelanguage.googleapis.com/v1beta/models/'
 const primaryModel='gemini-3.5-flash-lite'
-async function generateReply(apiKey,messages) {
+async function generateReply(apiKey,messages,onPartial) {
   if(!apiKey) throw Error('GEMINI_API_KEY missing')
   const first=new AbortController()
   const backup=new AbortController()
@@ -22,12 +22,21 @@ async function generateReply(apiKey,messages) {
   let startBackup
   const delay=new Promise(resolve=>{startBackup=resolve})
   const timer=setTimeout(startBackup,2500)
-  const preferred=requestGemini(apiKey,messages,'gemini-flash-latest',first.signal)
+  let source
+  const preview=model=>text=>{
+    source??=model
+    if(source===model) onPartial?.(text)
+  }
+  const preferred=requestGemini(apiKey,messages,'gemini-flash-latest',first.signal,preview('flash'))
   try {
     const outcome=await Promise.race([preferred.then(text=>({text}),err=>({err})),delay.then(()=>({slow:true}))])
     if(outcome.text) return outcome.text
     if(outcome.err && !retryable(outcome.err)) throw outcome.err
-    const alternate=requestGemini(apiKey,messages,primaryModel,backup.signal)
+    if(source==='flash' && !outcome.err){
+      try {return await preferred}
+      catch(err){if(!retryable(err)) throw err}
+    }
+    const alternate=requestGemini(apiKey,messages,primaryModel,backup.signal,preview('lite'))
     if(outcome.err) return await alternate
     try {return await Promise.any([preferred,alternate])}
     catch(err){throw err.errors.find(retryable) || err.errors[0]}
@@ -37,10 +46,10 @@ async function generateReply(apiKey,messages) {
     backup.abort()
   }
 }
-async function requestGemini(apiKey,messages,model,cancel) {
+async function requestGemini(apiKey,messages,model,cancel,onPartial) {
   const compatibility=model!==primaryModel
   const instruction='Sen Gaplashamizda botidagi Google Gemini yordamchisisan. Tabiiy, qisqa o‘zbekcha yoz. Darhol suhbatdoshning gapiga javob ber. Har safar salomlashma, xizmat taklif qilma, sarlavha yoki ism qo‘shma.'
-  const url=compatibility?'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions':geminiModelsUrl+model+':streamGenerateContent'
+  const url=compatibility?'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions':geminiModelsUrl+model+':streamGenerateContent?alt=sse'
   const auth=compatibility?{Authorization:'Bearer '+apiKey.trim()}:{'x-goog-api-key':apiKey.trim()}
   const controller=new AbortController()
   const abort=()=>controller.abort()
@@ -51,7 +60,7 @@ async function requestGemini(apiKey,messages,model,cancel) {
       method:'POST',
       headers:{'Content-Type':'application/json',...auth},
       signal:controller.signal,
-      body:JSON.stringify(compatibility?{model,messages:[{role:'system',content:instruction},...messages],max_tokens:600}:{
+      body:JSON.stringify(compatibility?{model,stream:true,reasoning_effort:'low',messages:[{role:'system',content:instruction},...messages],max_tokens:600}:{
         systemInstruction:{parts:[{text:instruction}]},
         contents:messages.map(m=>({role:m.role==='assistant'?'model':'user',parts:[{text:m.content}]})),
         generationConfig:{maxOutputTokens:600,thinkingConfig:{thinkingLevel:'MINIMAL'}}
@@ -63,6 +72,8 @@ async function requestGemini(apiKey,messages,model,cancel) {
       const code=/^[A-Z_]{1,80}$/.test(reason)?reason:'UNKNOWN'
       throw Error('gemini-api-'+response.status+'-'+code)
     }
+    if(response.headers.get('content-type')?.includes('text/event-stream'))
+      return await readGeminiStream(response.body,compatibility,onPartial)
     const result=await response.json()
     const chunks=Array.isArray(result)?result:[result]
     const reply=compatibility?result.choices?.[0]?.message?.content?.trim():chunks.flatMap(chunk=>chunk.candidates?.[0]?.content?.parts || []).filter(p=>!p.thought && typeof p.text==='string').map(p=>p.text).join('').trim()
@@ -72,6 +83,33 @@ async function requestGemini(apiKey,messages,model,cancel) {
     clearTimeout(deadline)
     cancel.removeEventListener('abort',abort)
   }
+}
+async function readGeminiStream(body,compatibility,onPartial){
+  const reader=body.pipeThrough(new TextDecoderStream()).getReader()
+  let pending='',text=''
+  function consume(event){
+    const data=event.split(/\r?\n/).filter(line=>line.startsWith('data:')).map(line=>line.slice(5).trimStart()).join('\n')
+    if(!data || data==='[DONE]') return
+    const chunk=JSON.parse(data)
+    if(chunk.error) throw Error('gemini-api-503-STREAM_ERROR')
+    const delta=compatibility?chunk.choices?.[0]?.delta?.content:chunk.candidates?.[0]?.content?.parts?.filter(p=>!p.thought).map(p=>p.text||'').join('')
+    if(typeof delta==='string' && delta && text.length<3200){
+      text=(text+delta).slice(0,3200)
+      if(text.trim()) onPartial?.(text)
+    }
+  }
+  try {
+    for(;;){
+      const {value,done}=await reader.read()
+      if(done) break
+      const events=(pending+value).split(/\r?\n\r?\n/)
+      pending=events.pop()
+      for(const event of events) consume(event)
+    }
+    consume(pending)
+  } finally {reader.releaseLock()}
+  if(!text.trim()) throw Error('Gemini empty reply')
+  return text.trim()
 }
 const interests = topics
 const questions = {
@@ -500,10 +538,12 @@ export class Lobby {
     const update=await request.json()
     if(update.diagnostic==='ai-check' && !update.update_id) {
       if(!this.env.GEMINI_API_KEY) return new Response('gemini-key-missing')
+      const started=Date.now()
+      let firstChunk
       const word=['anor','olma','behi'][Math.floor(Math.random()*3)]
       try {
-        const reply=await generateReply(this.env.GEMINI_API_KEY,[{role:'user',content:'Men tanlagan meva: '+word},{role:'assistant',content:'Tushundim.'},{role:'user',content:'Qaysi mevani tanladim? Faqat meva nomini yoz.'}])
-        return new Response(reply.toLowerCase().includes(word)?'model-ok':'model-answer-mismatch')
+        const reply=await generateReply(this.env.GEMINI_API_KEY,[{role:'user',content:'Men tanlagan meva: '+word},{role:'assistant',content:'Tushundim.'},{role:'user',content:'Qaysi mevani tanladim? Faqat meva nomini yoz.'}],()=>{firstChunk??=Date.now()-started})
+        return new Response(reply.toLowerCase().includes(word)?'model-ok':'model-answer-mismatch',{headers:{'x-first-chunk-ms':String(firstChunk??'buffered')}})
       } catch(err) {
         const code=/^gemini-api-\d{3}-[A-Z_]+$/.test(err.message)?err.message:
           err.name==='TimeoutError'?'gemini-timeout':err.message==='Gemini empty reply'?'gemini-empty-reply':'gemini-request-failed'
@@ -555,7 +595,17 @@ export class Lobby {
         const messages=[...JSON.parse(dialog.history).slice(-6),{role:'user',content:task.input}]
         let text
         try {
-          text=await generateReply(this.env.GEMINI_API_KEY,messages)
+          let nextPreview=0, sending=null
+          const preview=partial=>{
+            if(sending || Date.now()<nextPreview || !run('SELECT 1 FROM gemini_jobs WHERE request=?',task.request).length) return
+            nextPreview=Date.now()+1100
+            sending=fetch('https://api.telegram.org/bot'+this.env.BOT_TOKEN+'/sendMessageDraft',{
+              method:'POST',headers:{'Content-Type':'application/json'},signal:AbortSignal.timeout(1500),
+              body:JSON.stringify({chat_id:user,draft_id:task.request || 1,text:partial})
+            }).then(response=>{if(!response.ok) nextPreview=Infinity}).catch(()=>{nextPreview=Infinity}).finally(()=>{sending=null})
+          }
+          try {text=await generateReply(this.env.GEMINI_API_KEY,messages,preview)}
+          finally {if(sending) await sending}
         } catch(err) {
           if(!task.retried && (err.name==='TimeoutError' || err.name==='TypeError' || /^gemini-api-5/.test(err.message))){
             run('UPDATE gemini_jobs SET retried=1 WHERE request=?',task.request)
