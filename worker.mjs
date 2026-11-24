@@ -8,6 +8,7 @@ const editFields = {age:'Yosh', gender:'Jins', city:'Shahar', interest:'Qiziqish
 const button = (text,callback_data) => ({text,callback_data})
 const chat = [['🎭 Ikkidan biri','🎲 Savol tanlash'],['⏭ Keyingi'], ['👋 Tugatish', '🚩 Shikoyat qilish']]
 const aiButton='🤖 AI bilan gaplashish'
+const aiStopKey=token=>inline('⏹ AI suhbatini tugatish','aiStop:'+token)
 const queueKeys=[[aiButton,'🌍 Barcha shaharlardan izlash'],['❌ Qidiruvni bekor qilish']]
 async function generateReply(ai,messages) {
   const result=await ai.run('@cf/meta/llama-3.1-8b-instruct-fast',{
@@ -238,6 +239,12 @@ export function processUpdate(run, update, owner, origin) {
   if (cb) {
     enqueue('answerCallbackQuery',{callback_query_id:cb.id})
     const [action,num,arg] = (cb.data || '').split(':')
+    if(action==='aiStop') {
+      const stopped=user.phase==='queue' && run('DELETE FROM queue_turns WHERE user=? AND turns=? RETURNING user',id,Number(num)||0).length
+      if(!stopped) return me('Bu AI suhbati allaqachon tugagan.')
+      run('DELETE FROM ai_dialog WHERE user=?',id)
+      return me('AI suhbati tugadi. Suhbatdosh izlash davom etyapti.',queueKeys)
+    }
     if (action==='starter') {
       if (user.phase!=='queue' || !/^[0-2]$/.test(arg||'')) return me('Bu qidiruv tugagan.')
       const saved = one('UPDATE search_topic SET choice=? WHERE user=? AND session=? RETURNING user',Number(arg),id,Number(num)||0)
@@ -332,21 +339,31 @@ export function processUpdate(run, update, owner, origin) {
     run('INSERT OR IGNORE INTO search_topic(user,session) VALUES(?,?)',id,update.update_id)
     const {session}=one('SELECT session FROM search_topic WHERE user=?',id)
     if(aiTag && Number(aiTag[1])!==session) return me('Bu avvalgi AI suhbatiga javob. Yangi xabar yozing.',queueKeys)
-    if(t===aiButton || aiTag)
+    if(t==='/ai_stop'){
+      run('DELETE FROM queue_turns WHERE user=?',id)
+      run('DELETE FROM ai_dialog WHERE user=?',id)
+      return me('AI suhbati tugadi. Suhbatdosh izlash davom etyapti.',queueKeys)
+    }
+    if(t===aiButton)
       run("INSERT INTO ai_dialog VALUES(?,?,'[]') ON CONFLICT(user) DO UPDATE SET session=excluded.session,history='[]' WHERE session<>excluded.session",id,session)
-    if(t===aiButton) return me('🤖 AI bilan suhbat ochildi. Istagan mavzuda oddiy xabar yozing. Suhbatdosh izlash davom etyapti.')
     const dialog=one('SELECT history FROM ai_dialog WHERE user=? AND session=?',id,session)
+    let token
+    if(dialog){
+      run('INSERT INTO queue_turns VALUES(?,?,?,0) ON CONFLICT(user) DO UPDATE SET session=excluded.session,turns=excluded.turns,request=0 WHERE session<>excluded.session OR turns=0',id,session,update.update_id)
+      token=one('SELECT turns FROM queue_turns WHERE user=?',id).turns
+    }
+    if(t===aiButton) return say(id,'🤖 AI bilan suhbat ochildi. Istagan mavzuda oddiy xabar yozing. Suhbatdosh izlash davom etyapti.',aiStopKey(token))
     if(dialog && t && !t.startsWith('/')) {
       const day=Math.floor((Date.now()+5*3600000)/86400000)
       run('DELETE FROM ai_budget WHERE day<>?',day)
       run('INSERT OR IGNORE INTO ai_budget VALUES(?,0)',day)
       if(one('SELECT used FROM ai_budget WHERE day=?',day).used>=100)
-        return me('Bugungi AI limiti tugadi. Suhbatdosh qidirish davom etyapti.')
+        return say(id,'Bugungi AI limiti tugadi. Suhbatdosh qidirish davom etyapti.',aiStopKey(token))
       run('UPDATE ai_budget SET used=used+1 WHERE day=?',day)
       const messages=[...JSON.parse(dialog.history).slice(-6),{role:'user',content:t.slice(0,2000)}]
       run('UPDATE ai_dialog SET history=? WHERE user=?',JSON.stringify(messages),id)
-      run('INSERT OR REPLACE INTO queue_turns VALUES(?,?,0,?)',id,session,update.update_id)
-      return {id,session,request:update.update_id,messages}
+      run('UPDATE queue_turns SET request=? WHERE user=?',update.update_id,id)
+      return {id,session,token,request:update.update_id,messages}
     }
     return me('Hali suhbatdosh qidiryapman.')
   }
@@ -450,7 +467,7 @@ export class Lobby {
       const active=run("SELECT 1 FROM queue_turns a JOIN search_topic s ON s.user=a.user AND s.session=a.session JOIN people p ON p.id=a.user WHERE p.phase='queue' AND a.user=? AND a.request=?",task.id,task.request)
       if(!active.length) return
       if(text) run('UPDATE ai_dialog SET history=? WHERE user=? AND session=?',JSON.stringify([...task.messages,{role:'assistant',content:text}].slice(-6)),task.id,task.session)
-      const body={chat_id:task.id,text:text?'🤖 AI · '+task.session+'\n'+text:'AI xizmatidan javob kelmadi. Birozdan keyin qayta yozing.',protect_content:true}
+      const body={chat_id:task.id,text:text?'🤖 AI · '+task.session+'\n'+text:'AI xizmatidan javob kelmadi. Birozdan keyin qayta yozing.',reply_markup:aiStopKey(task.token),protect_content:true}
       run('INSERT INTO delivery(update_id,method,body) VALUES(?,?,?)',task.request,'sendMessage',JSON.stringify(body))
       await this.drain(run)
     })

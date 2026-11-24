@@ -241,7 +241,14 @@ try {
   assert(sent.at(-1).text.includes('Bugun sizni nima xursand qildi?'))
   const third=answerAI()
   assert(third.messages.some(m=>m.role==='assistant' && m.content.includes('xursand')))
-  admin(aiUser,'❌ Qidiruvni bekor qilish')
+  const stop=aiPrompt.reply_markup.inline_keyboard[0][0].callback_data
+  assert.equal(stop,sent.at(-1).reply_markup.inline_keyboard[0][0].callback_data)
+  assert.match(admin(aiUser,stop,true).at(-1).text,/AI suhbati tugadi/)
+  assert.equal(run('SELECT phase FROM people WHERE id=?',aiUser)[0].phase,'queue')
+  assert.equal(answerAI()?.request,undefined)
+  admin(aiUser,'🤖 AI bilan gaplashish')
+  admin(aiUser,stop,true)
+  assert.equal(answerAI().id,aiUser)
   const before=sent.length
   await lobby.replyAI(run,third)
   assert.equal(sent.length,before)
