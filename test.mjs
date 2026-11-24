@@ -291,3 +291,22 @@ try {
   await Promise.all(pending)
   assert.deepEqual(deliveries.filter(m=>m.chat_id===811 && m.text.startsWith('reply ')).map(m=>m.text),['reply slow','reply next'])
 } finally {release();globalThis.fetch=originalFetch}
+
+admin(812,'Streaming test')
+try {
+  const previews=[]
+  globalThis.fetch=async(url,opts)=>{
+    if(url.includes('googleapis.com')){
+      assert(JSON.parse(opts.body).stream)
+      const data=['Sa','lom'].map(content=>'data: '+JSON.stringify({choices:[{delta:{content}}]})+'\r\n\r\n').join('')+'data: [DONE]\n\n'
+      return new Response(new ReadableStream({start(c){
+        const bytes=new TextEncoder().encode(data)
+        c.enqueue(bytes.slice(0,21));c.enqueue(bytes.slice(21));c.close()
+      }}),{headers:{'content-type':'text/event-stream'}})
+    }
+    previews.push([url.split('/').pop(),JSON.parse(opts.body).text])
+    return new Response()
+  }
+  await lobby.alarm()
+  assert.deepEqual(previews,[['sendMessageDraft','Sa'],['sendMessage','Salom']])
+} finally {globalThis.fetch=originalFetch}
