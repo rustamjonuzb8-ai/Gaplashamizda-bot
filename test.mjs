@@ -243,6 +243,7 @@ try {
     const body=JSON.parse(opts.body)
     if(url.includes('googleapis.com')){
       assert.equal(opts.headers.Authorization,'Bearer test-key')
+      assert.equal(body.messages[1].role,'user')
       generated.push(body.messages)
       return Response.json({choices:[{message:{content:'Javob '+generated.length}}]})
     }
@@ -309,4 +310,24 @@ try {
   }
   await lobby.alarm()
   assert.deepEqual(previews,[['sendMessageDraft','Sa'],['sendMessage','Salom']])
+} finally {globalThis.fetch=originalFetch}
+
+admin(812,'Blmadm')
+try {
+  let attempts=0
+  const delivered=[]
+  globalThis.fetch=async(url,opts)=>{
+    if(url.includes('googleapis.com')){
+      attempts++
+      if(attempts<3) return new Response('unavailable',{status:503})
+      assert(url.endsWith(':generateContent'))
+      assert.equal(JSON.parse(opts.body).contents[0].role,'user')
+      return Response.json({candidates:[{content:{parts:[{text:'Kino haqida gaplashamizmi?'}]}}]})
+    }
+    delivered.push(JSON.parse(opts.body).text)
+    return new Response()
+  }
+  await lobby.alarm()
+  assert.equal(attempts,3)
+  assert(delivered.includes('Kino haqida gaplashamizmi?'))
 } finally {globalThis.fetch=originalFetch}
