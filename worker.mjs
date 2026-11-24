@@ -14,7 +14,7 @@ async function generateReply(apiKey,messages) {
   if(!apiKey) throw Error('GEMINI_API_KEY missing')
   const response=await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent',{
     method:'POST',
-    headers:{'Content-Type':'application/json','x-goog-api-key':apiKey},
+    headers:{'Content-Type':'application/json','x-goog-api-key':apiKey.trim()},
     signal:AbortSignal.timeout(25000),
     body:JSON.stringify({
       systemInstruction:{parts:[{text:'Sen Gaplashamizda botidagi Google Gemini yordamchisisan. O‘zbek tilida, suhbat mavzusiga mos javob ber.'}]},
@@ -22,7 +22,12 @@ async function generateReply(apiKey,messages) {
       generationConfig:{maxOutputTokens:600}
     })
   })
-  if(!response.ok) throw Error('Gemini HTTP '+response.status)
+  if(!response.ok) {
+    const {error}=await response.json().catch(()=>({}))
+    const reason=error?.details?.find(detail=>detail.reason)?.reason || error?.status
+    const code=/^[A-Z_]{1,80}$/.test(reason)?reason:'UNKNOWN'
+    throw Error('gemini-api-'+response.status+'-'+code)
+  }
   const result=await response.json()
   const reply=result.candidates?.[0]?.content?.parts?.filter(p=>!p.thought && typeof p.text==='string').map(p=>p.text).join('').trim()
   if(!reply) throw Error('Gemini empty reply')
@@ -450,8 +455,14 @@ export class Lobby {
     if(update.diagnostic==='ai-check' && !update.update_id) {
       if(!this.env.GEMINI_API_KEY) return new Response('gemini-key-missing')
       const word=['anor','olma','behi'][Math.floor(Math.random()*3)]
-      const reply=await generateReply(this.env.GEMINI_API_KEY,[{role:'user',content:'Men tanlagan meva: '+word},{role:'assistant',content:'Tushundim.'},{role:'user',content:'Qaysi mevani tanladim? Faqat meva nomini yoz.'}])
-      return new Response(reply.toLowerCase().includes(word)?'model-ok':'model-answer-mismatch')
+      try {
+        const reply=await generateReply(this.env.GEMINI_API_KEY,[{role:'user',content:'Men tanlagan meva: '+word},{role:'assistant',content:'Tushundim.'},{role:'user',content:'Qaysi mevani tanladim? Faqat meva nomini yoz.'}])
+        return new Response(reply.toLowerCase().includes(word)?'model-ok':'model-answer-mismatch')
+      } catch(err) {
+        const code=/^gemini-api-\d{3}-[A-Z_]+$/.test(err.message)?err.message:
+          err.message==='Gemini empty reply'?'gemini-empty-reply':'gemini-request-failed'
+        return new Response(code,{status:502})
+      }
     }
     const work=this.tail.then(()=>this.handle(update,new URL(request.url).origin))
     this.tail=work.catch(()=>{})
