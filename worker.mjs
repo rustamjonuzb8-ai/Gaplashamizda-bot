@@ -9,12 +9,15 @@ const button = (text,callback_data) => ({text,callback_data})
 const chat = [['🎭 Ikkidan biri','🎲 Savol tanlash'],['⏭ Keyingi'], ['👋 Tugatish', '🚩 Shikoyat qilish']]
 const aiButton='🤖 AI bilan gaplashish'
 const queueKeys=[[aiButton,'🌍 Barcha shaharlardan izlash'],['❌ Qidiruvni bekor qilish']]
-const aiReply={force_reply:true,input_field_placeholder:'AI yordamchisiga javob yozing'}
-const riddles=[
-  ['Qaysi narsa quritgani sari o‘zi ho‘l bo‘ladi?', 'Sochiq'],
-  ['Nima sizniki, lekin boshqalar uni sizdan ko‘proq ishlatadi?', 'Ismingiz'],
-  ['Qaysi narsani buzsangiz, ovoz chiqmaydi?', 'Sukunat']
-]
+async function generateReply(ai,messages) {
+  const result=await ai.run('@cf/meta/llama-3.1-8b-instruct-fast',{
+    messages:[{role:'system',content:'Sen Gaplashamizda botining AI yordamchisisan. Foydalanuvchining mavzusida tabiiy o‘zbek tilida aniq va qisqa javob ber. Oldingi gaplarni hisobga ol.'},...messages],
+    max_tokens:240
+  })
+  const text=result?.response?.trim()
+  if(!text) throw Error('AI returned empty text')
+  return text.slice(0,2000)
+}
 const interests = topics
 const questions = {
   Kino: 'Qaysi filmni yana bir marta ko‘rardingiz?',
@@ -53,9 +56,12 @@ const keyboard = rows => ({keyboard: rows, resize_keyboard: true})
 const inline = (label, data) => ({inline_keyboard: [[{text: label, callback_data: data}]]})
 export const schema = adminSchema + premiumSchema + gameSchema + `
 CREATE TABLE IF NOT EXISTS queue_turns(user INTEGER PRIMARY KEY, session INTEGER, turns INTEGER, request INTEGER);
+CREATE TABLE IF NOT EXISTS ai_handoff(user INTEGER PRIMARY KEY, room INTEGER);
+CREATE TABLE IF NOT EXISTS ai_dialog(user INTEGER PRIMARY KEY,session INTEGER,history TEXT);
 CREATE TABLE IF NOT EXISTS ai_budget(day INTEGER PRIMARY KEY, used INTEGER);
 CREATE TABLE IF NOT EXISTS daily_votes(day INTEGER,user INTEGER,pick INTEGER,PRIMARY KEY(day,user));
 CREATE TABLE IF NOT EXISTS people(id INTEGER PRIMARY KEY, phase TEXT DEFAULT 'age', age INTEGER, city TEXT DEFAULT '', interest TEXT DEFAULT '', gender TEXT DEFAULT '', room INTEGER DEFAULT 0, waiting INTEGER DEFAULT 0, wide INTEGER DEFAULT 0, previous INTEGER DEFAULT 0);
+CREATE TRIGGER IF NOT EXISTS clear_ai_dialog AFTER UPDATE OF phase ON people WHEN OLD.phase='queue' AND NEW.phase<>'queue' BEGIN DELETE FROM ai_dialog WHERE user=NEW.id; END;
 CREATE TABLE IF NOT EXISTS search_topic(user INTEGER PRIMARY KEY, session INTEGER, choice INTEGER);
 CREATE TABLE IF NOT EXISTS room_thanks(room INTEGER, sender INTEGER, PRIMARY KEY(room,sender));
 CREATE INDEX IF NOT EXISTS queue ON people(phase,waiting);
@@ -202,12 +208,15 @@ export function processUpdate(run, update, owner, origin) {
     run('DELETE FROM invites WHERE room IN (SELECT id FROM rooms WHERE a IN (?,?) OR b IN (?,?))',a.id,b.id,a.id,b.id)
     const r = one('INSERT INTO rooms(a,b) VALUES(?,?) RETURNING id',a.id,b.id).id
     const pick = one("SELECT choice FROM search_topic WHERE user IN (?,?) AND user IN (SELECT id FROM people WHERE phase='queue') AND choice IS NOT NULL ORDER BY session LIMIT 1",a.id,b.id)
+    run('INSERT OR REPLACE INTO ai_handoff SELECT user,? FROM ai_dialog WHERE user IN (?,?)',r,a.id,b.id)
     run('DELETE FROM search_topic WHERE user IN (?,?)',a.id,b.id)
     run("UPDATE people SET room=?, phase='chat', waiting=0 WHERE id IN (?,?)",r,a.id,b.id)
     for (const [self,peer] of [[a,b],[b,a]]) {
       const tier=membership(run,peer.id)
       say(self.id,(tier?plans[tier.plan].badge:'💬')+' Suhbatdosh topildi!\n'+[peer.gender,peer.age+' yosh',peer.city].filter(Boolean).join(' · ')+'\n'+(self.interest===peer.interest?'Umumiy qiziqish':'Suhbatdosh qiziqishi')+' · '+peer.interest+'\n\nBir-biringizni tezroq bilmoqchimisiz? 🎭 Ikkidan biri tugmasini bosib, birinchi tanlovni qiling.',keyboard(chat))
-      if (pick) {
+      if(one('SELECT 1 FROM ai_handoff WHERE user=? AND room=?',self.id,r)){
+        say(self.id,'AI suhbati tugadi. Endi xabarlaringizni haqiqiy suhbatdoshga yuborish uchun tasdiqlang.',inline('💬 Suhbatga o‘tish','join:'+r))
+      } else if (pick) {
         const starter = starters[pick.choice]
         say(self.id,starter.label+' · Suhbat uchun savol\n'+starter.question)
       } else say(self.id,question(peer.interest),inline('💬 Savolni yuborish','topic:'+r+':'+interests.indexOf(peer.interest)))
@@ -238,6 +247,10 @@ export function processUpdate(run, update, owner, origin) {
     if (!room) return me('Bu tugma eskirgan. Joriy holatni ko‘rish uchun /start bosing.')
     const peer = person(room.a===id?room.b:room.a)
     if (blocked(id,peer.id)) return me('Bu amal endi mavjud emas.')
+    if(action==='join' && user.room===room.id && !room.ended){
+      run('DELETE FROM ai_handoff WHERE user=? AND room=?',id,room.id)
+      return me('Suhbat ochildi. Endi suhbatdoshingizga yozing.',chat)
+    }
     if(action==='game' && user.room===room.id && !room.ended) return game(run,room,id,say,arg)
     if (action==='topic' && user.room===room.id && !room.ended) {
       const tier=membership(run,id)
@@ -318,25 +331,23 @@ export function processUpdate(run, update, owner, origin) {
     }
     run('INSERT OR IGNORE INTO search_topic(user,session) VALUES(?,?)',id,update.update_id)
     const {session}=one('SELECT session FROM search_topic WHERE user=?',id)
-    const prefix='🤖 AI · '+session+'\n'
-    if(t===aiButton) return say(id,prefix+'Men AI yordamchisiman. Qidiruv davom etyapti. Shu xabarga javob yozing: bugun kayfiyatingiz qanday?',aiReply)
-    if(aiTag && Number(aiTag[1])===session && t && !t.startsWith('/')) {
-      const puzzle=riddles.findIndex(([q])=>aiPrompt.text.endsWith(q))
-      if(puzzle>=0) {
-        const [q]=riddles[(puzzle+1)%riddles.length]
-        return say(id,prefix+'Topishmoq javobi: '+riddles[puzzle][1]+'. Keyingisi: '+q,aiReply)
-      }
+    if(aiTag && Number(aiTag[1])!==session) return me('Bu avvalgi AI suhbatiga javob. Yangi xabar yozing.',queueKeys)
+    if(t===aiButton || aiTag)
+      run("INSERT INTO ai_dialog VALUES(?,?,'[]') ON CONFLICT(user) DO UPDATE SET session=excluded.session,history='[]' WHERE session<>excluded.session",id,session)
+    if(t===aiButton) return me('🤖 AI bilan suhbat ochildi. Istagan mavzuda oddiy xabar yozing. Suhbatdosh izlash davom etyapti.')
+    const dialog=one('SELECT history FROM ai_dialog WHERE user=? AND session=?',id,session)
+    if(dialog && t && !t.startsWith('/')) {
       const day=Math.floor((Date.now()+5*3600000)/86400000)
       run('DELETE FROM ai_budget WHERE day<>?',day)
       run('INSERT OR IGNORE INTO ai_budget VALUES(?,0)',day)
-      const state=one('SELECT * FROM queue_turns WHERE user=? AND session=?',id,session)
-      if ((state?.turns||0)>=3 || one('SELECT used FROM ai_budget WHERE day=?',day).used>=100)
-        return say(id,prefix+'AI limiti tugadi. Kutguncha topishmoq: '+riddles[0][0],aiReply)
+      if(one('SELECT used FROM ai_budget WHERE day=?',day).used>=100)
+        return me('Bugungi AI limiti tugadi. Suhbatdosh qidirish davom etyapti.')
       run('UPDATE ai_budget SET used=used+1 WHERE day=?',day)
-      run('INSERT OR REPLACE INTO queue_turns VALUES(?,?,?,?)',id,session,(state?.turns||0)+1,update.update_id)
-      return {id,session,request:update.update_id,context:aiPrompt.text.slice(prefix.length,900),input:t.slice(0,600)}
+      const messages=[...JSON.parse(dialog.history).slice(-6),{role:'user',content:t.slice(0,2000)}]
+      run('UPDATE ai_dialog SET history=? WHERE user=?',JSON.stringify(messages),id)
+      run('INSERT OR REPLACE INTO queue_turns VALUES(?,?,0,?)',id,session,update.update_id)
+      return {id,session,request:update.update_id,messages}
     }
-    if(aiTag) return me('Joriy qidiruvda AI tugmasini bosib, yangi xabarga javob yozing.',queueKeys)
     return me('Hali suhbatdosh qidiryapman.')
   }
   if (user.phase==='ready') {
@@ -379,6 +390,8 @@ export function processUpdate(run, update, owner, origin) {
   if (message.reply_to_message || message.external_reply) return me('Xabarni yangi matn sifatida yuboring. Hozirgi suhbatdoshingizga boradi.')
   if (['🌍 Barcha shaharlardan izlash','❌ Qidiruvni bekor qilish'].includes(t)) return me('Qidiruv yakunlandi. Hozir suhbatdasiz.',chat)
   if (!t || t.startsWith('/')) return me('Hozir matnli xabar yuborishingiz mumkin.')
+  if(one('SELECT 1 FROM ai_handoff WHERE user=? AND room=?',id,room.id))
+    return say(id,'Xabaringiz yuborilmadi. Haqiqiy suhbatdoshga yozish uchun tasdiqlang.',inline('💬 Suhbatga o‘tish','join:'+room.id))
   say(peer,t)
 }
 
@@ -406,6 +419,11 @@ export class Lobby {
   }
   async fetch(request) {
     const update=await request.json()
+    if(update.diagnostic==='ai-check' && !update.update_id) {
+      const word=['anor','olma','behi'][Math.floor(Math.random()*3)]
+      const reply=await generateReply(this.env.AI,[{role:'user',content:'Men tanlagan meva: '+word},{role:'assistant',content:'Tushundim.'},{role:'user',content:'Qaysi mevani tanladim? Faqat meva nomini yoz.'}])
+      return new Response(reply.toLowerCase().includes(word)?'model-ok':'model-answer-mismatch')
+    }
     const work=this.tail.then(()=>this.handle(update,new URL(request.url).origin))
     this.tail=work.catch(()=>{})
     return work
@@ -424,19 +442,15 @@ export class Lobby {
   async replyAI(run,task) {
     let text
     try {
-      const result=await this.env.AI.run('@cf/meta/llama-3.1-8b-instruct',{
-        messages:[
-          {role:'system',content:'Sen Gaplashamizda botining AI yordamchisisan. Kutayotgan odamga lotin yozuvidagi tabiiy o‘zbek tilida qisqa va do‘stona javob ber. Shaxsiy ma’lumot so‘rama. O‘zingni haqiqiy inson deb ko‘rsatma.'},
-          {role:'assistant',content:task.context},{role:'user',content:task.input}
-        ],max_tokens:140
-      })
-      text=result.response?.trim().slice(0,800)
-    } catch {}
+      text=await generateReply(this.env.AI,task.messages)
+    } catch (err) {
+      console.warn('queue AI request failed',err?.name)
+    }
     const finish=this.tail.then(async()=>{
       const active=run("SELECT 1 FROM queue_turns a JOIN search_topic s ON s.user=a.user AND s.session=a.session JOIN people p ON p.id=a.user WHERE p.phase='queue' AND a.user=? AND a.request=?",task.id,task.request)
       if(!active.length) return
-      const fallback='AI hozir band. Kutguncha topishmoq: '+riddles[0][0]
-      const body={chat_id:task.id,text:'🤖 AI · '+task.session+'\n'+(text||fallback),reply_markup:aiReply,protect_content:true}
+      if(text) run('UPDATE ai_dialog SET history=? WHERE user=? AND session=?',JSON.stringify([...task.messages,{role:'assistant',content:text}].slice(-6)),task.id,task.session)
+      const body={chat_id:task.id,text:text?'🤖 AI · '+task.session+'\n'+text:'AI xizmatidan javob kelmadi. Birozdan keyin qayta yozing.',protect_content:true}
       run('INSERT INTO delivery(update_id,method,body) VALUES(?,?,?)',task.request,'sendMessage',JSON.stringify(body))
       await this.drain(run)
     })
