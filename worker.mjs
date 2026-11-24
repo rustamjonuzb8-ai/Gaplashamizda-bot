@@ -82,7 +82,7 @@ CREATE TABLE IF NOT EXISTS invites(room INTEGER PRIMARY KEY, sender INTEGER, exp
 CREATE TABLE IF NOT EXISTS updates(id INTEGER PRIMARY KEY, at INTEGER);
 CREATE TABLE IF NOT EXISTS delivery(id INTEGER PRIMARY KEY, update_id INTEGER, method TEXT, body TEXT);
 `
-export function processUpdate(run, update, owner, origin) {
+export function processUpdate(run, update, owner, origin, geminiReady=true) {
   const cb = update.callback_query
   const message = update.message
   const sender = cb?.from || message?.from
@@ -353,6 +353,8 @@ export function processUpdate(run, update, owner, origin) {
       run('DELETE FROM gemini_dialog WHERE user=?',id)
       return me('AI suhbati tugadi. Suhbatdosh izlash davom etyapti.',queueKeys)
     }
+    if(!geminiReady && (t===aiButton || one('SELECT 1 FROM gemini_dialog WHERE user=?',id)))
+      return me('Google Gemini uchun kalit hali sozlanmagan. Suhbatdosh izlash davom etyapti.',queueKeys)
     if(t===aiButton)
       run("INSERT INTO gemini_dialog VALUES(?,?,'[]') ON CONFLICT(user) DO UPDATE SET session=excluded.session,history='[]' WHERE session<>excluded.session",id,session)
     const dialog=one('SELECT history FROM gemini_dialog WHERE user=? AND session=?',id,session)
@@ -446,6 +448,7 @@ export class Lobby {
   async fetch(request) {
     const update=await request.json()
     if(update.diagnostic==='ai-check' && !update.update_id) {
+      if(!this.env.GEMINI_API_KEY) return new Response('gemini-key-missing')
       const word=['anor','olma','behi'][Math.floor(Math.random()*3)]
       const reply=await generateReply(this.env.GEMINI_API_KEY,[{role:'user',content:'Men tanlagan meva: '+word},{role:'assistant',content:'Tushundim.'},{role:'user',content:'Qaysi mevani tanladim? Faqat meva nomini yoz.'}])
       return new Response(reply.toLowerCase().includes(word)?'model-ok':'model-answer-mismatch')
@@ -460,7 +463,7 @@ export class Lobby {
     this.ctx.storage.transactionSync(()=>{
       run('DELETE FROM updates WHERE at<?',Date.now()-48*3600000)
       if (run('INSERT OR IGNORE INTO updates VALUES(?,?) RETURNING id',update.update_id,Date.now()).length)
-        aiTask=processUpdate(run,update,this.env.ADMIN_ID,origin)
+        aiTask=processUpdate(run,update,this.env.ADMIN_ID,origin,Boolean(this.env.GEMINI_API_KEY))
     })
     if(aiTask?.request) this.ctx.waitUntil(this.replyAI(run,aiTask))
     return this.drain(run)
