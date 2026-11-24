@@ -10,13 +10,22 @@ const chat = [['🎭 Ikkidan biri','🎲 Savol tanlash'],['⏭ Keyingi'], ['👋
 const aiButton='🤖 AI bilan gaplashish'
 const aiStopKey=token=>inline('⏹ AI suhbatini tugatish','aiStop:'+token)
 const queueKeys=[[aiButton,'🌍 Barcha shaharlardan izlash'],['❌ Qidiruvni bekor qilish']]
-const geminiModelUrl='https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite'
+const geminiModelsUrl='https://generativelanguage.googleapis.com/v1beta/models/'
+const primaryModel='gemini-3.5-flash-lite'
 async function generateReply(apiKey,messages) {
   if(!apiKey) throw Error('GEMINI_API_KEY missing')
-  const response=await fetch(geminiModelUrl+':streamGenerateContent',{
+  try {
+    return await requestGemini(apiKey,messages,primaryModel)
+  } catch(err) {
+    if(err.name!=='TimeoutError' && !/^gemini-api-(500|502|503|504|404)-/.test(err.message)) throw err
+    return requestGemini(apiKey,messages,'gemini-3.1-flash-lite')
+  }
+}
+async function requestGemini(apiKey,messages,model) {
+  const response=await fetch(geminiModelsUrl+model+':streamGenerateContent',{
     method:'POST',
     headers:{'Content-Type':'application/json','x-goog-api-key':apiKey.trim()},
-    signal:AbortSignal.timeout(60000),
+    signal:AbortSignal.timeout(12000),
     body:JSON.stringify({
       systemInstruction:{parts:[{text:'Sen Gaplashamizda botidagi Google Gemini yordamchisisan. O‘zbek tilida, suhbat mavzusiga mos javob ber.'}]},
       contents:messages.map(m=>({role:m.role==='assistant'?'model':'user',parts:[{text:m.content}]})),
@@ -465,7 +474,7 @@ export class Lobby {
           err.name==='TimeoutError'?'gemini-timeout':err.message==='Gemini empty reply'?'gemini-empty-reply':'gemini-request-failed'
         let metadata='unreachable'
         try {
-          const response=await fetch(geminiModelUrl,{headers:{'x-goog-api-key':this.env.GEMINI_API_KEY.trim()},signal:AbortSignal.timeout(10000)})
+          const response=await fetch(geminiModelsUrl+primaryModel,{headers:{'x-goog-api-key':this.env.GEMINI_API_KEY.trim()},signal:AbortSignal.timeout(10000)})
           metadata=String(response.status)
         } catch(err) { if(err.name==='TimeoutError') metadata='timeout' }
         return new Response(code+'-metadata-'+metadata,{status:502})
