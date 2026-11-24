@@ -8,22 +8,24 @@ const editFields = {age:'Yosh', gender:'Jins', city:'Shahar', interest:'Qiziqish
 const button = (text,callback_data) => ({text,callback_data})
 const chat = [['🎭 Ikkidan biri','🎲 Savol tanlash'],['⏭ Keyingi'], ['👋 Tugatish', '🚩 Shikoyat qilish']]
 const aiButton='🤖 AI bilan gaplashish'
-const aiStopKey=token=>inline('⏹ AI suhbatini tugatish','aiStop:'+token)
+const aiStop='⏹ AI suhbatini tugatish'
+const greeting='Salom! Bugun kuningiz qanday o‘tdi?'
 const queueKeys=[[aiButton,'🌍 Barcha shaharlardan izlash'],['❌ Qidiruvni bekor qilish']]
+const aiQueueKeys=[[aiStop,'🌍 Barcha shaharlardan izlash'],['❌ Qidiruvni bekor qilish']]
 const geminiModelsUrl='https://generativelanguage.googleapis.com/v1beta/models/'
 const primaryModel='gemini-3.5-flash-lite'
 async function generateReply(apiKey,messages) {
   if(!apiKey) throw Error('GEMINI_API_KEY missing')
   try {
-    return await requestGemini(apiKey,messages,primaryModel)
+    return await requestGemini(apiKey,messages,'gemini-flash-latest')
   } catch(err) {
-    if(err.name!=='TimeoutError' && !/^gemini-api-(500|502|503|504|404)-/.test(err.message)) throw err
-    return requestGemini(apiKey,messages,'gemini-flash-latest')
+    if(err.name!=='TimeoutError' && err.name!=='TypeError' && err.message!=='Gemini empty reply' && !/^gemini-api-(500|502|503|504|404)-/.test(err.message)) throw err
+    return requestGemini(apiKey,messages,primaryModel)
   }
 }
 async function requestGemini(apiKey,messages,model) {
   const compatibility=model!==primaryModel
-  const instruction='Sen Gaplashamizda botidagi Google Gemini yordamchisisan. O‘zbek tilida, suhbat mavzusiga mos javob ber.'
+  const instruction='Sen Gaplashamizda botidagi Google Gemini yordamchisisan. Tabiiy, qisqa o‘zbekcha yoz. Darhol suhbatdoshning gapiga javob ber. Har safar salomlashma, xizmat taklif qilma, sarlavha yoki ism qo‘shma.'
   const url=compatibility?'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions':geminiModelsUrl+model+':streamGenerateContent'
   const auth=compatibility?{Authorization:'Bearer '+apiKey.trim()}:{'x-goog-api-key':apiKey.trim()}
   const response=await fetch(url,{
@@ -88,6 +90,8 @@ export const schema = adminSchema + premiumSchema + gameSchema + `
 CREATE TABLE IF NOT EXISTS queue_turns(user INTEGER PRIMARY KEY, session INTEGER, turns INTEGER, request INTEGER);
 CREATE TABLE IF NOT EXISTS ai_handoff(user INTEGER PRIMARY KEY, room INTEGER);
 CREATE TABLE IF NOT EXISTS gemini_dialog(user INTEGER PRIMARY KEY,session INTEGER,history TEXT);
+CREATE TABLE IF NOT EXISTS gemini_jobs(request INTEGER PRIMARY KEY,user INTEGER,session INTEGER,token INTEGER,input TEXT,retried INTEGER DEFAULT 0);
+CREATE TRIGGER IF NOT EXISTS clear_gemini_jobs AFTER DELETE ON gemini_dialog BEGIN DELETE FROM gemini_jobs WHERE user=OLD.user; END;
 CREATE TABLE IF NOT EXISTS ai_budget(day INTEGER PRIMARY KEY, used INTEGER);
 CREATE TABLE IF NOT EXISTS daily_votes(day INTEGER,user INTEGER,pick INTEGER,PRIMARY KEY(day,user));
 CREATE TABLE IF NOT EXISTS people(id INTEGER PRIMARY KEY, phase TEXT DEFAULT 'age', age INTEGER, city TEXT DEFAULT '', interest TEXT DEFAULT '', gender TEXT DEFAULT '', room INTEGER DEFAULT 0, waiting INTEGER DEFAULT 0, wide INTEGER DEFAULT 0, previous INTEGER DEFAULT 0);
@@ -115,6 +119,7 @@ export function processUpdate(run, update, owner, origin, geminiReady=true) {
   const me = (text, rows) => say(id,text,rows && keyboard(rows))
   const one = (q,...args) => run(q,...args)[0]
   const person = who => one('SELECT * FROM people WHERE id=?',who)
+  const waitingKeys=()=>one('SELECT 1 FROM gemini_dialog WHERE user=?',id)?aiQueueKeys:queueKeys
   const homeFor = who => [
     ['🔎 Suhbat izlash'], ['📊 Statistikam','💎 Premium'], ['⚙️ Sozlamalar'],
     ...(String(who)===String(owner) ? [['🛠 Admin panel']] : [])
@@ -220,7 +225,7 @@ export function processUpdate(run, update, owner, origin, geminiReady=true) {
     }
     if([back,'/menu','/cancel','/start'].includes(t)) return me('🏠 Bosh menyu'+(String(id)===String(owner)?' · Siz adminsiz.':'')+'\n\nSuhbatdosh topish uchun «🔎 Suhbat izlash»ni bosing.',home)
   }
-  if(!cb && busy && (mini || ['👤 Profilim','⚙️ Sozlamalar',back,'🤝 Tanishlarim','💬 Suhbat boshlash','/menu'].includes(t))) return me(user.phase==='queue'?'Qidiruv davom etyapti.':'Suhbat davom etyapti.',user.phase==='chat'?chat:queueKeys)
+  if(!cb && busy && (mini || ['👤 Profilim','⚙️ Sozlamalar',back,'🤝 Tanishlarim','💬 Suhbat boshlash','/menu'].includes(t))) return me(user.phase==='queue'?'Qidiruv davom etyapti.':'Suhbat davom etyapti.',user.phase==='chat'?chat:waitingKeys())
   if(!cb && user.phase.startsWith('edit_')){
     const field=user.phase.slice(5)
     if(!Object.hasOwn(editFields,field)) return
@@ -263,7 +268,7 @@ export function processUpdate(run, update, owner, origin, geminiReady=true) {
     run("UPDATE people SET phase='queue',waiting=?,wide=? WHERE id=?",waiting,wide,id)
     if (!user.waiting) run('DELETE FROM search_topic WHERE user=?',id)
     run('INSERT OR IGNORE INTO search_topic(user,session) VALUES(?,?)',id,update.update_id)
-    me('🔎 Suhbatdosh izlayapman. Topilguncha AI bilan yozishishingiz yoki Telegramdan chiqishingiz mumkin.',queueKeys)
+    me('🔎 Suhbatdosh izlayapman. Topilguncha AI bilan yozishishingiz yoki Telegramdan chiqishingiz mumkin.',waitingKeys())
   }
   if (cb) {
     enqueue('answerCallbackQuery',{callback_query_id:cb.id})
@@ -331,7 +336,7 @@ export function processUpdate(run, update, owner, origin, geminiReady=true) {
   if (t==='/start') {
     if(String(id)===String(owner) && !complete) say(id,'🛠 Siz bot adminisiz.',inline('Admin panelni ochish','adm:home'))
     if (user.phase==='chat') return me('Suhbat davom etyapti. Xabar yozing yoki savol tanlang.',chat)
-    if (user.phase==='queue') return me('Qidiruv davom etmoqda.',queueKeys)
+    if (user.phase==='queue') return me('Qidiruv davom etmoqda.',waitingKeys())
     if (user.phase==='ready') return me('Salom! Gaplashamizmi? 👋',home)
     run("UPDATE people SET phase='age' WHERE id=?",id)
     return say(id,setting(run,'welcome')+'\n\n🎂 Yoshingiz nechada? '+setting(run,'age')+' yosh yoki undan katta bo‘lsangiz, yoshingizni raqam bilan yozing.',{remove_keyboard:true})
@@ -358,7 +363,7 @@ export function processUpdate(run, update, owner, origin, geminiReady=true) {
   }
   const aiPrompt=message?.reply_to_message
   const aiTag=aiPrompt?.from?.is_bot && /^🤖 AI · (\d+)\n/.exec(aiPrompt.text || '')
-  if (user.phase!=='queue' && (aiTag || t===aiButton)) return me('AI bilan kutish vaqti tugadi.',user.phase==='chat'?chat:home)
+  if (user.phase!=='queue' && (aiTag || t===aiButton || t===aiStop)) return me('AI bilan kutish vaqti tugadi.',user.phase==='chat'?chat:home)
   if (user.phase==='queue') {
     if (t==='🌍 Barcha shaharlardan izlash') return search(1)
     if (t==='/stop' || t==='❌ Qidiruvni bekor qilish') {
@@ -367,34 +372,36 @@ export function processUpdate(run, update, owner, origin, geminiReady=true) {
     }
     run('INSERT OR IGNORE INTO search_topic(user,session) VALUES(?,?)',id,update.update_id)
     const {session}=one('SELECT session FROM search_topic WHERE user=?',id)
-    if(aiTag && Number(aiTag[1])!==session) return me('Bu avvalgi AI suhbatiga javob. Yangi xabar yozing.',queueKeys)
-    if(t==='/ai_stop'){
+    if(aiTag && Number(aiTag[1])!==session) return me('Bu avvalgi AI suhbatiga javob. Yangi xabar yozing.',waitingKeys())
+    if(t==='/ai_stop' || t===aiStop){
       run('DELETE FROM queue_turns WHERE user=?',id)
       run('DELETE FROM gemini_dialog WHERE user=?',id)
       return me('AI suhbati tugadi. Suhbatdosh izlash davom etyapti.',queueKeys)
     }
     if(!geminiReady && (t===aiButton || one('SELECT 1 FROM gemini_dialog WHERE user=?',id)))
       return me('Google Gemini uchun kalit hali sozlanmagan. Suhbatdosh izlash davom etyapti.',queueKeys)
-    if(t===aiButton)
-      run("INSERT INTO gemini_dialog VALUES(?,?,'[]') ON CONFLICT(user) DO UPDATE SET session=excluded.session,history='[]' WHERE session<>excluded.session",id,session)
+    if(t===aiButton){
+      const opened=one("INSERT INTO gemini_dialog VALUES(?,?,?) ON CONFLICT(user) DO UPDATE SET session=excluded.session,history=excluded.history WHERE session<>excluded.session RETURNING user",id,session,JSON.stringify([{role:'assistant',content:greeting}]))
+      me(opened?'Gemini bilan suhbat boshlandi.':'Gemini bilan suhbat davom etyapti.',aiQueueKeys)
+      if(opened) say(id,greeting)
+      return
+    }
     const dialog=one('SELECT history FROM gemini_dialog WHERE user=? AND session=?',id,session)
     let token
     if(dialog){
       run('INSERT INTO queue_turns VALUES(?,?,?,0) ON CONFLICT(user) DO UPDATE SET session=excluded.session,turns=excluded.turns,request=0 WHERE session<>excluded.session OR turns=0',id,session,update.update_id)
       token=one('SELECT turns FROM queue_turns WHERE user=?',id).turns
     }
-    if(t===aiButton) return say(id,'🤖 Google Gemini bilan suhbat ochildi. Shu yerda yozgan AI xabarlaringiz javob olish uchun Google’ga yuboriladi. Istagan mavzuda oddiy xabar yozing.',aiStopKey(token))
     if(dialog && t && !t.startsWith('/')) {
       const day=Math.floor((Date.now()+5*3600000)/86400000)
       run('DELETE FROM ai_budget WHERE day<>?',day)
       run('INSERT OR IGNORE INTO ai_budget VALUES(?,0)',day)
       if(one('SELECT used FROM ai_budget WHERE day=?',day).used>=100)
-        return say(id,'Bugungi AI limiti tugadi. Suhbatdosh qidirish davom etyapti.',aiStopKey(token))
+        return me('Bugungi AI limiti tugadi.')
       run('UPDATE ai_budget SET used=used+1 WHERE day=?',day)
-      const messages=[...JSON.parse(dialog.history).slice(-6),{role:'user',content:t.slice(0,2000)}]
-      run('UPDATE gemini_dialog SET history=? WHERE user=?',JSON.stringify(messages),id)
-      run('UPDATE queue_turns SET request=? WHERE user=?',update.update_id,id)
-      return {id,session,token,request:update.update_id,messages}
+      run('INSERT INTO gemini_jobs(request,user,session,token,input) VALUES(?,?,?,?,?)',update.update_id,id,session,token,t.slice(0,2000))
+      return {request:update.update_id}
+
     }
     return me('Hali suhbatdosh qidiryapman.')
   }
@@ -496,26 +503,41 @@ export class Lobby {
       if (run('INSERT OR IGNORE INTO updates VALUES(?,?) RETURNING id',update.update_id,Date.now()).length)
         aiTask=processUpdate(run,update,this.env.ADMIN_ID,origin,Boolean(this.env.GEMINI_API_KEY))
     })
-    if(aiTask?.request) this.ctx.waitUntil(this.replyAI(run,aiTask))
+    if((aiTask?.request || run('SELECT 1 FROM gemini_jobs LIMIT 1').length) && await this.ctx.storage.getAlarm()===null)
+      await this.ctx.storage.setAlarm(Date.now())
     return this.drain(run)
   }
-  async replyAI(run,task) {
-    let text
-    try {
-      text=await generateReply(this.env.GEMINI_API_KEY,task.messages)
-    } catch (err) {
-      console.warn('queue AI request failed',err?.name)
+  async alarm() {
+    const run=(q,...args)=>this.sql.exec(q,...args).toArray()
+    const task=run('SELECT * FROM gemini_jobs ORDER BY request LIMIT 1')[0]
+    if(task){
+      const dialog=run('SELECT history FROM gemini_dialog WHERE user=? AND session=?',task.user,task.session)[0]
+      if(dialog){
+        const messages=[...JSON.parse(dialog.history).slice(-6),{role:'user',content:task.input}]
+        let text
+        try {
+          text=await generateReply(this.env.GEMINI_API_KEY,messages)
+        } catch(err) {
+          if(!task.retried && (err.name==='TimeoutError' || err.name==='TypeError' || /^gemini-api-5/.test(err.message))){
+            run('UPDATE gemini_jobs SET retried=1 WHERE request=?',task.request)
+            await this.ctx.storage.setAlarm(Date.now()+1500)
+            return
+          }
+          console.warn('Gemini request failed',/^gemini-api-/.test(err.message)?err.message:err.name)
+        }
+        this.ctx.storage.transactionSync(()=>{
+          if(!run('DELETE FROM gemini_jobs WHERE request=? RETURNING request',task.request).length) return
+          if(text) run('UPDATE gemini_dialog SET history=? WHERE user=? AND session=?',JSON.stringify([...messages,{role:'assistant',content:text}].slice(-6)),task.user,task.session)
+          const body={chat_id:task.user,text:text||'Gemini hozir javob bera olmadi. Qayta urinib ko‘ring.',reply_markup:colorButtons(keyboard(aiQueueKeys)),protect_content:true}
+          run('INSERT INTO delivery(update_id,method,body) VALUES(?,?,?)',task.request,'sendMessage',JSON.stringify(body))
+        })
+      } else run('DELETE FROM gemini_jobs WHERE request=?',task.request)
     }
-    const finish=this.tail.then(async()=>{
-      const active=run("SELECT 1 FROM queue_turns a JOIN search_topic s ON s.user=a.user AND s.session=a.session JOIN people p ON p.id=a.user WHERE p.phase='queue' AND a.user=? AND a.request=?",task.id,task.request)
-      if(!active.length) return
-      if(text) run('UPDATE gemini_dialog SET history=? WHERE user=? AND session=?',JSON.stringify([...task.messages,{role:'assistant',content:text}].slice(-6)),task.id,task.session)
-      const body={chat_id:task.id,text:text?'🤖 AI · '+task.session+'\n'+text:'AI xizmatidan javob kelmadi. Birozdan keyin qayta yozing.',reply_markup:aiStopKey(task.token),protect_content:true}
-      run('INSERT INTO delivery(update_id,method,body) VALUES(?,?,?)',task.request,'sendMessage',JSON.stringify(body))
-      await this.drain(run)
-    })
+    const finish=this.tail.then(()=>this.drain(run))
     this.tail=finish.catch(()=>{})
-    await finish
+    const result=await finish
+    if(!result.ok || run('SELECT 1 FROM gemini_jobs LIMIT 1').length)
+      await this.ctx.storage.setAlarm(Date.now()+(result.ok?0:1500))
   }
   async drain(run) {
     for (;;) {
