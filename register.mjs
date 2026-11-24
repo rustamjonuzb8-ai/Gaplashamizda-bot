@@ -19,4 +19,4 @@ console.log('Telegram ulanishi tasdiqlandi.')
 
 const probe=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json','X-Telegram-Bot-Api-Secret-Token':await webhookSecret(BOT_TOKEN)},body:JSON.stringify({diagnostic:'ai-check'})})
 if (!probe.ok || await probe.text()!=='model-ok') throw Error('Live AI conversation probe failed: '+probe.status)
-console.log('Live Workers AI generated a contextual reply.')
+console.log('Live Google Gemini generated a contextual reply.')
